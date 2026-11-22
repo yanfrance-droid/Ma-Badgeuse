@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  ma-badgeuse:
+    image: ma-badgeuse:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ma-badgeuse
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_PATH=/app/data/database.sqlite
+      - BACKUP_DIR=/app/backups
+      - TZ=${APP_TIMEZONE:-Europe/Paris}
+      - APP_TIMEZONE=${APP_TIMEZONE:-Europe/Paris}
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

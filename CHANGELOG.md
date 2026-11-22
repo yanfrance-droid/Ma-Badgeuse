@@ -5,6 +5,16 @@ Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/)
 
 ---
 
+## [0.2.1] - 2026-11-22
+
+### Amélioré (Compatibilité Mobile & Installation Android / iOS)
+- **Installation Mobile Universelle sans échec sur réseau local :**
+  - Remplacement de la contrainte WebAPK (qui échouait sous Chrome Android sur IP locale HTTP avec le message "Impossible d'installer cette application") par le mode direct « Ajouter à l'écran d'accueil ».
+  - Intégration des balises `mobile-web-app-capable` et liens d'icônes haute résolution (192x192, 512x512) permettant une installation instantanée en 10 secondes sur tous les smartphones Android (Xiaomi MIUI/HyperOS, Samsung, Pixel) et iPhone Safari.
+  - Expérience plein écran préservée sur smartphone sans barre d'adresse superflue.
+
+---
+
 ## [0.2.0] - 2026-11-22
 
 ### Ajouté & Renforcé (Sécurité, Multi-Utilisateurs & PWA)

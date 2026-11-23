@@ -226,4 +226,15 @@ describe('Santé de la base', () => {
     assert.equal((await optimizeDatabase()).success, true);
     assert.equal((await getDatabaseStatus()).integrity, 'ok');
   });
+
+  test('schéma v3 : les colonnes de question secrète sont absentes et la création de compte fonctionne', async () => {
+    const cols = await db.all<{ name: string }>('PRAGMA table_info(users)');
+    const names = cols.map((c) => c.name);
+    assert.equal(names.includes('security_question'), false);
+    assert.equal(names.includes('security_answer_hash'), false);
+
+    // Vérification de la création d'un utilisateur sans contrainte NOT NULL orpheline
+    const newUser = await createUser({ username: 'charlie', displayName: 'Charlie', password: 'motdepasse-charlie1' });
+    assert.equal(newUser.username, 'charlie');
+  });
 });

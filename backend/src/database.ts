@@ -8,7 +8,7 @@ const DEFAULT_DB_PATH = path.resolve(__dirname, '../../data/database.sqlite');
 const DB_PATH = process.env.DB_PATH || DEFAULT_DB_PATH;
 
 /** Version du schéma attendue par ce code (stockée dans PRAGMA user_version). */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const dbDir = path.dirname(DB_PATH);
 if (!fs.existsSync(dbDir)) {
@@ -169,8 +169,6 @@ const TABLES_SQL = `
     username TEXT UNIQUE NOT NULL,
     display_name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    security_question TEXT NOT NULL DEFAULT '',
-    security_answer_hash TEXT NOT NULL DEFAULT '',
     is_admin INTEGER NOT NULL DEFAULT 0,
     must_change_password INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -383,8 +381,10 @@ async function migrateToV2(): Promise<void> {
     WHERE id = (SELECT MIN(id) FROM users)
       AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = 1)
   `);
-  // La réinitialisation par question secrète est supprimée : on efface les réponses stockées.
-  await rawExec(`UPDATE users SET security_answer_hash = ''`);
+  // La réinitialisation par question secrète est supprimée : on efface les réponses stockées si la colonne existe encore.
+  if (await columnExists('users', 'security_answer_hash')) {
+    await rawExec(`UPDATE users SET security_answer_hash = ''`);
+  }
 
   // Les jetons de session sont désormais stockés hachés : les anciens (en clair) sont invalidés.
   await rawExec(`DELETE FROM user_sessions`);
@@ -422,12 +422,27 @@ async function migrateToV2(): Promise<void> {
   }
 }
 
+/**
+ * Migration 3 : suppression définitive des colonnes obsolètes de question secrète
+ * (security_question et security_answer_hash) sur la table users, débloquant la création
+ * de compte sur les bases migrées depuis la v0.1 / v0.2.
+ */
+async function migrateToV3(): Promise<void> {
+  if (await columnExists('users', 'security_question')) {
+    await rawExec(`ALTER TABLE users DROP COLUMN security_question`);
+  }
+  if (await columnExists('users', 'security_answer_hash')) {
+    await rawExec(`ALTER TABLE users DROP COLUMN security_answer_hash`);
+  }
+}
+
 // Une migration « transactionnelle » est appliquée dans une transaction unique avec la
 // mise à jour de user_version. La migration 1 ne l'est pas : elle doit désactiver les
 // clés étrangères, ce que SQLite ignore à l'intérieur d'une transaction.
 const MIGRATIONS: Array<{ version: number; transactional: boolean; up: () => Promise<void> }> = [
   { version: 1, transactional: false, up: migrateToV1 },
-  { version: 2, transactional: true, up: migrateToV2 }
+  { version: 2, transactional: true, up: migrateToV2 },
+  { version: 3, transactional: true, up: migrateToV3 }
 ];
 
 async function seedReferenceData(): Promise<void> {

@@ -1,10 +1,11 @@
 {
   "name": "ma-badgeuse-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "typecheck": "tsc",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
@@ -21,7 +22,6 @@
     "postcss": "^8.5.1",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3",
-    "vite": "^6.0.7",
-    "vite-plugin-pwa": "^0.21.1"
+    "vite": "^6.0.7"
   }
 }

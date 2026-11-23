@@ -1,126 +1,109 @@
-# Suivi Heures Pro 🕒 (Ma Badgeuse)
-**Application web mobile-first (PWA) de suivi des heures de travail à planning variable**  
-*Conçue spécifiquement pour le personnel de cantine scolaire, d'entretien des locaux et de garderie.*
+# Ma Badgeuse 🕒
+**Application web mobile de suivi des heures de travail à planning variable**
+*Pensée pour le personnel de cantine scolaire, d'entretien des locaux et de garderie, avec un contrat annualisé.*
+
+Version actuelle : **0.3.0** (voir [CHANGELOG.md](CHANGELOG.md)).
 
 ---
 
-## 📸 Aperçu de l'Application (Captures d'écran)
+## 📸 Aperçu
 
-### 📱 Expérience Mobile (PWA Smartphone)
+Captures de la version 0.3.0 sur téléphone (données de démonstration).
 
-| 1. Cockpit & Soldes Nets | 2. Saisie Rapide du Pointage | 3. Historique & Livre de Preuves |
+| 1. Accueil et compteurs | 2. Pointage du jour | 3. Livre de preuves |
 | :---: | :---: | :---: |
-| <img src="docs/screenshots/01_cockpit_mobile.png" width="260" alt="Cockpit Mobile & Soldes Compensés" /> | <img src="docs/screenshots/02_pointage_quotidien.png" width="260" alt="Formulaire de Pointage Quotidien" /> | <img src="docs/screenshots/03_livre_de_preuves.png" width="260" alt="Livre de Preuves et Historique" /> |
-| *Vignette Phare : Heures sup nettes (+8h15) et dette éteinte (0h00)* | *Horaires habituels pré-remplis (10h45 - 14h45), pauses et statuts* | *Tableau chronologique complet avec pastilles colorées et motifs* |
+| <img src="docs/screenshots/01_cockpit_mobile.png" width="240" alt="Accueil : journée non pointée, quota annuel, objectif du mois" /> | <img src="docs/screenshots/02_pointage_quotidien.png" width="240" alt="Formulaire de pointage du jour" /> | <img src="docs/screenshots/03_livre_de_preuves.png" width="240" alt="Livre de preuves du mois" /> |
 
-<br/>
+| 4. Bilan annuel (septembre à août) | 5. Congés sur plusieurs jours | 6. Menu « Plus » |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/04_bilan_annuel_scolaire.png" width="240" alt="Bilan annuel scolaire" /> | <img src="docs/screenshots/05_poser_periode.png" width="240" alt="Poser une période de congés" /> | <img src="docs/screenshots/06_menu_plus.png" width="240" alt="Menu Plus" /> |
 
-| 4. Bilan Annuel Scolaire (Septembre à Août) | 5. Poser des Périodes Multi-Jours |
-| :---: | :---: |
-| <img src="docs/screenshots/04_bilan_annuel_scolaire.png" width="260" alt="Bilan Annuel et Quota d'heures" /> | <img src="docs/screenshots/05_poser_periode.png" width="260" alt="Poser une période multi-jours" /> |
-| *Décompte en temps réel sur le quota annuel contractuel (800h)* | *Congés, vacances scolaires, arrêts sans répéter la saisie* |
+| 7. Installation sur Android |
+| :---: |
+| <img src="docs/screenshots/07_installation_android.png" width="240" alt="Fenêtre Installer Ma Badgeuse" /> |
 
----
-
-### 💻 Version Grand Écran (Ordinateur & Tablette)
-
-<div align="center">
-  <img src="docs/screenshots/06_dashboard_desktop.png" width="90%" alt="Tableau de bord Desktop" />
-  <p><em>Vue complète du tableau de bord sur grand écran avec accès aux réglages, transmission et export officiel.</em></p>
-</div>
+Guides en PDF : [guide utilisateur](docs/GUIDE_UTILISATEUR.pdf) • [guide d'installation](docs/GUIDE_INSTALLATION_ET_GESTION_DOCKER.pdf).
 
 ---
 
-## 🌟 Points Forts & Philosophie de l'Application
+## 🌟 Fonctionnalités
 
-- 📱 **Mobile-First & PWA Réelle :** Conçue pour une utilisation ultra-rapide sur smartphone Android et iPhone. S'installe directement sur l'écran d'accueil avec de vraies icônes d'application natives haute définition (`192x192` et `512x512`).
-- ⚖️ **Compensation Directe & Logique (Rattrapage automatique) :**
-  - **Heures supplémentaires :** Dues par l'employeur (à payer ou récupérer).
-  - **Heures à rattraper :** Dues à l'employeur.
-  - **Rattrapage automatique :** Vos heures supplémentaires viennent directement et intelligemment combler vos absences éventuelles (dette éteinte à 0h00 si couverte).
-  - **Persistance infinie :** Vos soldes restent visibles mois après mois et année après année sans remise à zéro arbitraire.
-- 👥 **Multi-Utilisateurs & Espaces Étanche :**
-  - Gestion sécurisée de plusieurs comptes indépendants (ex. les membres de la famille).
-  - **Remise à zéro personnelle (RAZ) 100% isolée :** Réinitialise vos propres heures sans jamais impacter les données des autres comptes. Sauvegarde d'urgence (`safety_user_X`) créée automatiquement avant tout effacement.
-- 🔐 **Sécurité & Mode Administrateur Renforcés :**
-  - Mots de passe hachés avec **PBKDF2 salé** (10 000 itérations SHA-256) et protection anti-force brute (verrouillage 15 min après 5 échecs).
-  - **Mode Administrateur protégé par code PIN :** Verrouillage strict des opérations sensibles (sauvegardes serveur, restauration globale, suppression d'utilisateur).
-- 🎯 **3 Niveaux Horaires :** Objectif contractuel fixe, heures attendues au planning jour par jour (4h00 par défaut de 10h45 à 14h45), et heures réellement effectuées.
-- 🎨 **Palette de 9 Statuts Métier :** Congés payés, journées à 0h, arrêts maladie, événements familiaux, congés maternité, congés sans solde, vacances scolaires, fermetures d'école, jours fériés — pilotant directement le calcul comptable (`MAINTAINED`, `NEUTRAL`, `DEDUCTED`).
-- 🖨️ **Feuille d'Émargement Officielle :** Format d'impression A4 prêt pour la paie et la direction avec double cadre de visa et signature réglementaire (Code du Travail Art. L. 3171-4).
-- 🛡️ **Protection Anti-Écrasement :** Les modifications apportées à un jour précis priment toujours sur les périodes collectives ; une alerte obligatoire vous avertit avant tout écrasement.
-- 🏠 **Auto-Hébergement Souverain :** Déploiement léger et autonome sous Docker sur votre serveur Proxmox (LXC ou VM) avec base de données SQLite en mode WAL.
+- 📱 **Conçue pour le téléphone** (usage exclusif) : barre de navigation en bas à portée de pouce, menu « Plus », PWA installable avec fenêtre d'installation sur Android (en un geste en HTTPS), qui n'est plus proposée une fois l'application installée. Pas de mode hors ligne.
+- ⚖️ **Deux compteurs clairs** : « On me doit » (heures en plus) et « Je dois » (heures à rattraper), compensés automatiquement, conservés d'un mois sur l'autre.
+- 🎯 **Trois niveaux d'heures** : objectif du mois (planning), heures prévues par jour, heures réellement faites ; quota annuel de septembre à août.
+- 🏖️ **Absences et périodes** : motifs (congés, maladie, férié, fermeture…) avec impact choisi (neutre, à rattraper, compté travaillé), périodes multi-jours sans écraser les journées saisies à la main.
+- 🔒 **Validation du mois** : un mois validé est verrouillé (journées, périodes, régularisations, objectif) jusqu'à sa réouverture.
+- ↩️ **Historique et annulation** : chaque modification est journalisée ; « Annuler » revient sur la dernière, l'onglet *Historique* liste les 100 dernières.
+- 🖨️ **Relevés imprimables** (mois et année) avec cadres de visa, **export CSV** (Excel), **transmission** par WhatsApp, e-mail, SMS ou copie.
+- 👥 **Plusieurs comptes** sur un même serveur, données séparées ; effacement de ses propres données avec sauvegarde de sécurité préalable.
+- 🛠️ **Administration** (comptes administrateurs) : sauvegardes, restauration vérifiée, optimisation, gestion des comptes et des mots de passe temporaires.
+
+## 🔐 Sécurité
+
+- **Premier lancement** : aucun compte par défaut. Le premier compte créé devient **administrateur** ; l'inscription libre est ensuite **fermée** (l'administrateur crée les comptes ou rouvre l'inscription).
+- **Session** dans un cookie `HttpOnly` / `SameSite=Strict` (jamais lisible par JavaScript), 30 jours glissants, jetons stockés hachés côté serveur.
+- **Mots de passe** : 10 caractères minimum, hachage **scrypt** ; anciens hachages convertis à la connexion. Limitation des essais par compte et par adresse IP.
+- **Mot de passe oublié** : l'administrateur génère un mot de passe temporaire (à changer à la connexion), ou en ligne de commande sur le serveur :
+  ```bash
+  docker exec -it ma-badgeuse node backend/dist/scripts/resetPassword.js <identifiant> [--admin]
+  ```
+- **En-têtes de sécurité** (CSP, anti-cadre, nosniff), vérification de l'origine des requêtes d'écriture, conteneur sans privilèges (utilisateur `node`, système de fichiers en lecture seule).
+- **HTTPS recommandé** dès que l'application sort du réseau local : voir le [guide d'installation](docs/GUIDE_INSTALLATION_ET_GESTION_DOCKER.md#accès-en-https).
 
 ---
 
-## 🏗️ Architecture Technique
+## 🏗️ Architecture
 
 ```
-┌────────────────────────────────────────────────────────┐
-│                   Smartphone / PWA                     │
-│  React 18 + TypeScript + Tailwind CSS + Lucide Icons   │
-│       (PWA Standalone, Service Worker, Icônes HD)      │
-└───────────────────────────▲────────────────────────────┘
-                            │ REST API (JSON + JWT/Bearer + PIN)
-┌───────────────────────────▼────────────────────────────┐
-│              Conteneur Docker Node.js                  │
-│       Express + TypeScript + SQLite3 (Mode WAL)        │
-│       Moteur de calcul compensé + Auth PBKDF2 salé     │
-└───────────────────────────▲────────────────────────────┘
-                            │ WAL Mode
-┌───────────────────────────▼────────────────────────────┐
-│                    Volumes Proxmox                     │
-│        ./data/database.sqlite (Données actives)        │
-│        ./backups/             (Sauvegardes à chaud)    │
-└────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│ Navigateur (smartphone / ordinateur)         │
+│ React 18 + TypeScript + Tailwind + Lucide    │
+└──────────────────────▲───────────────────────┘
+                       │ API REST JSON + cookie de session
+┌──────────────────────▼───────────────────────┐
+│ Conteneur Docker Node.js 24                  │
+│ Express 4 + TypeScript + sqlite3 (WAL)       │
+│ Migrations versionnées (PRAGMA user_version) │
+└──────────────────────▲───────────────────────┘
+┌──────────────────────▼───────────────────────┐
+│ Volumes : ./data (base) • ./backups          │
+└──────────────────────────────────────────────┘
 ```
 
-### Stack Applicative
-- **Frontend :** React 18, TypeScript, Tailwind CSS, Vite, `vite-plugin-pwa`, Lucide React.
-- **Backend :** Node.js 20 LTS, Express, TypeScript, SQLite3 natif.
-- **Base de Données :** SQLite 3 configuré pour la haute résilience :
-  - `PRAGMA journal_mode = WAL;` (Write-Ahead Logging pour des lectures et écritures concurrentes non-bloquantes).
-  - `PRAGMA synchronous = NORMAL;` (Résilience contre les coupures).
-  - `PRAGMA foreign_keys = ON;`
-- **Sauvegarde à chaud :** Commande native `VACUUM INTO` sans interruption de service.
+- **Frontend** : React 18, TypeScript strict, Vite 6, Tailwind CSS 3.
+- **Backend** : Node.js ≥ 20.17 (image Docker : Node 24), Express 4, sqlite3 6, multer 2. Une seule connexion SQLite, opérations sérialisées, transactions pour toute écriture multiple.
+- **Sauvegardes** : `VACUUM INTO` à chaud, une par jour (14 gardées), sauvegardes de sécurité (20 gardées) avant restauration ou effacement, fichiers vérifiés (`integrity_check`) avant restauration.
 
 ---
 
-## 🚀 Déploiement sous Proxmox (Docker Compose)
+## 🚀 Installation (Docker Compose)
 
-### 1. Structure Recommandée sur le Serveur
+Le script [gestion-ma-badgeuse.sh](gestion-ma-badgeuse.sh) installe, met à jour (avec sauvegarde préalable) et redémarre l'application. Le détail est dans le [guide d'installation](docs/GUIDE_INSTALLATION_ET_GESTION_DOCKER.md).
 
 ```bash
-/opt/suivi-heures-pro/
-├── docker-compose.yml
-├── data/       # Stockage persistant de la base SQLite
-└── backups/    # Répertoire des sauvegardes automatiques
-```
-
-### 2. Démarrage Rapide
-
-```bash
-cd /opt/suivi-heures-pro
+cd /opt/ma-badgeuse
+cp .env.example .env          # puis adapter
+sudo chown -R 1000:1000 data backups
 docker compose up -d --build
 ```
 
-L'application est immédiatement accessible sur `http://IP_SERVEUR:3000`.
+Ouvrez ensuite `http://IP_DU_SERVEUR:3000` et créez le compte administrateur.
 
----
+## 🧑‍💻 Développement
 
-## 💾 Sauvegardes & Sécurité des Données
+```bash
+npm run install:all
+npm run dev:backend      # API sur http://localhost:3000
+npm run dev:frontend     # interface sur http://localhost:5173 (proxy /api)
+npm test                 # tests du backend (node:test)
+npm run typecheck        # vérification TypeScript backend + frontend
+```
 
-1. **Sauvegarde Manuelle & Export :** Téléchargez une copie directe de votre base de données au format `.sqlite` en 1 clic depuis l'onglet *Maintenance & Serveur*.
-2. **Sauvegardes d'Urgence (`safety_`) :** Avant toute opération critique (remise à zéro personnelle, restauration d'un fichier), une copie d'urgence non purgeable est archivée sur le serveur.
-3. **Rotation Automatique :** Le système conserve 14 sauvegardes de routine tout en protégeant définitivement les copies de sécurité.
-
----
-
-## 🛠️ Commandes Administrateur
+## 🛠️ Commandes utiles
 
 | Commande | Action |
 | :--- | :--- |
-| `docker compose ps` | Vérifier l'état du conteneur et du healthcheck |
-| `docker compose logs -f` | Consulter les journaux en temps réel |
+| `docker compose ps` | État du conteneur et du contrôle de santé |
+| `docker compose logs -f` | Journaux en temps réel |
 | `docker compose restart` | Redémarrer l'application |
-| `docker compose down` | Arrêter proprement le service |
+| `docker compose down` | Arrêter le service |

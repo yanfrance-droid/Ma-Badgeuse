@@ -1,7 +1,59 @@
 # Journal des Modifications (CHANGELOG.md)
 
-Toutes les modifications notables apportées au projet **Suivi Heures Pro (Ma Badgeuse)** seront consignées dans ce fichier.  
+Toutes les modifications notables apportées au projet **Ma Badgeuse** sont consignées dans ce fichier.  
 Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/), et ce projet adhère à la spécification [Semantic Versioning](https://semver.org/lang/fr/).
+
+---
+
+## [0.3.0] - 2026-11-23
+
+Version issue de l'audit complet du code (voir `audit.md`). **Mise à jour à lire avant de déployer** : voir `MISE_A_JOUR_GIT.md`, section « Après le déploiement ».
+
+### Sécurité (changements incompatibles)
+- **Rôle administrateur** à la place du code PIN : le PIN, son en-tête `x-admin-pin` et ses routes sont supprimés. Le compte le plus ancien devient administrateur à la migration.
+- **Plus de compte par défaut** : le premier compte créé devient administrateur, puis l'inscription libre est fermée (réglable par l'administrateur).
+- **Session en cookie `HttpOnly` / `SameSite=Strict`** (plus de jeton dans `localStorage`), jetons stockés hachés : toutes les sessions existantes sont fermées par la migration.
+- **Mots de passe** : scrypt, 10 caractères minimum ; un ancien mot de passe trop court doit être changé à la connexion.
+- **Question secrète supprimée** : réinitialisation par l'administrateur (mot de passe temporaire) ou par le script `resetPassword`.
+- Limitation des essais par compte (5 → 15 min) et par adresse IP, limitation des inscriptions.
+- En-têtes de sécurité (CSP…), contrôle de l'origine des requêtes d'écriture, taille des requêtes limitée, erreurs internes jamais renvoyées telles quelles.
+- Toutes les routes de sauvegarde, restauration et maintenance réservées aux administrateurs ; fichiers restaurés vérifiés (`integrity_check`, tables attendues) et retour automatique en arrière en cas d'échec.
+- Dépendances : sqlite3 6, multer 2 (`npm audit` : 0 vulnérabilité en production). cors retiré (inutile, même origine).
+
+### Corrigé
+- Migrations versionnées (`PRAGMA user_version`), une seule connexion SQLite sérialisée, transactions sur toutes les écritures multiples.
+- Validation stricte des données reçues (vraies dates, heures, nombres) avec messages d'erreur clairs ; 404 JSON pour une route d'API inconnue.
+- Solde net du mois et des mois du bilan annuel calculé selon les règles du jour : une absence neutre n'apparaît plus comme une dette.
+- Règles de calcul : statuts « VARIABLE » traités comme « NEUTRAL », « CUSTOM » comme « DEDUCTED » ; une absence « maintenue » ne crée jamais de dette.
+- Régularisations : impossible de régler plus que le solde ou de dater un règlement dans le futur.
+- « Annuler » couvre les journées, régularisations, objectifs et périodes, et ne rejoue jamais deux fois la même action.
+- Une période qui chevauche une autre est refusée ; sa suppression est annulable.
+- La remise à zéro personnelle ne supprime plus les réglages du compte.
+- Frontend : le formulaire du jour n'est plus effacé par un rechargement des données, réponses obsolètes ignorées lors d'un changement de mois rapide, rappel de notification limité au mois en cours, pointage rapide par lien confirmé avant enregistrement, durées toujours affichées en heures et minutes, motif et impact d'absence enregistrés (plus déduits du texte de la note).
+
+### Ajouté
+- **Interface pensée pour le téléphone** (usage exclusif) : en-tête compact, barre de navigation en bas (Pointer, Congés, Bilan, Envoyer, Plus), menu « Plus » en panneau bas, zones tactiles agrandies, marges des écrans à encoche.
+- **Fenêtre « Installer l'application » sur Android** : installation en un geste en HTTPS, explication de l'ajout manuel en HTTP ; plus jamais proposée une fois installée ou refusée (reste disponible dans « Plus »). Manifeste `manifest.webmanifest` et service worker minimal `sw.js` (sans cache : page « Serveur injoignable », clic sur les notifications).
+- Notifications de rappel envoyées par le service worker quand il est actif (seule méthode acceptée par Chrome sur Android).
+- **Validation / réouverture du mois** (mois verrouillé).
+- **Historique** des 100 dernières modifications (onglet des réglages).
+- **Export CSV** des journées (mois ou année scolaire), compatible Excel.
+- **Administration** : comptes (création, mot de passe temporaire, rôle, suppression), inscription ouverte/fermée, liste complète des sauvegardes avec téléchargement.
+- Réglages du compte stockés sur le serveur (nom, employeur, poste, contacts) au lieu du navigateur.
+- Changement de mot de passe dans l'application ; messages non bloquants au lieu des `alert()` ; fenêtres accessibles (Échap, rôle dialog) ; écran d'erreur au lieu d'une page blanche.
+- Tests automatisés (`npm test`, node:test) : 42 tests métier et sécurité sur une base temporaire isolée.
+- Documentation : captures d'écran refaites sur téléphone, guide utilisateur illustré, guides disponibles en PDF (`docs/GUIDE_UTILISATEUR.pdf`, `docs/GUIDE_INSTALLATION_ET_GESTION_DOCKER.pdf`).
+
+### Code
+- `App.tsx` découpé (4 800 → 83 lignes) : un composant par bloc d'écran, fenêtre et relevé imprimable (`frontend/src/components/workspace/`), logique dans `hooks/useWorkspace.ts`, `useTheme.ts` et `useReminders.ts`, règles d'affichage dans `domain.ts`. Aucun changement visible.
+
+### Infrastructure
+- Image Docker Node 24, exécution en utilisateur non privilégié, système de fichiers en lecture seule ; `BIND_ADDRESS`, `COOKIE_SECURE`, `TRUST_PROXY`, `ALLOWED_ORIGINS` configurables.
+- Script de gestion : sauvegarde cohérente avant mise à jour (échec bloquant), droits des dossiers, délai de démarrage en erreur, nettoyage limité aux images du projet.
+
+### Retiré
+- Composants frontend inutilisés, ancien service worker jamais enregistré (`sw-custom.js`) et dépendance `vite-plugin-pwa` (remplacés par le manifeste et `sw.js` ci-dessus).
+- Export HTML du guide d'installation (le Markdown fait foi ; le PDF est régénéré à partir de lui) et capture d'écran sur ordinateur.
 
 ---
 

@@ -1,100 +1,139 @@
-# Guide Utilisateur Simple & Quotidien (USER_GUIDE.md)
-**Application :** Suivi Heures Pro (Ma Badgeuse)  
+# Guide utilisateur (USER_GUIDE.md)
+**Application :** Ma Badgeuse (version 0.3.0)  
 **Pour qui ?** Personnel de cantine scolaire, d'entretien des locaux et de garderie.  
-**Sur quoi ?** Optimisé pour smartphone (Android, iPhone) et ordinateur.
+**Sur quoi ?** Téléphone (Android, iPhone) : l'application est conçue pour être utilisée au doigt.
 
 ---
 
-## 👋 Bienvenue sur Ma Badgeuse !
+## 👋 Bienvenue
 
-Ce guide a été conçu pour vous accompagner pas à pas. L'application est faite pour vous simplifier la vie, sans jargon technique ni calculs compliqués à faire de tête.
-
----
-
-## 📲 1. Installer l'application sur votre smartphone (PWA)
-
-Pour ouvrir l'application comme n'importe quelle vraie application mobile de votre téléphone (sans ouvrir le navigateur à chaque fois) :
-
-### Sur Android (Google Chrome) :
-1. Ouvrez l'adresse de votre application dans **Google Chrome**.
-2. Souvent, Chrome affiche automatiquement un bandeau en bas de l'écran :  
-   👉 **« Installer l'application »** ou **« Ajouter à l'écran d'accueil »**.  
-   *(Sinon : touchez les **3 petits points** en haut à droite de Chrome, puis cliquez sur **« Installer l'application »**)*.
-3. Validez : le beau logo officiel **Ma Badgeuse** apparaît immédiatement sur votre écran d'accueil parmi vos autres applications.
-
-### Sur iPhone (Safari) :
-1. Ouvrez l'adresse de votre application dans **Safari**.
-2. Appuyez sur le bouton **Partager** (le carré avec une flèche vers le haut en bas de l'écran).
-3. Faites défiler vers le bas et touchez **« Sur l'écran d'accueil »**.
-4. Appuyez sur **« Ajouter »** en haut à droite.
-5. L'icône officielle **Ma Badgeuse** est prête sur votre écran d'accueil !
+L'application calcule vos heures à votre place : vous indiquez quand vous arrivez et quand vous partez, elle tient vos compteurs.
 
 ---
 
-## ⏱️ 2. Pointer sa journée en 10 secondes (Horaires habituels par défaut)
+## 🔑 1. Se connecter
 
-Vos horaires habituels de travail sont configurés par défaut sur **10h45 - 14h45** (soit **4h00** par jour sans pause repas) :
+- **Tout premier lancement** : l'écran propose de créer le **compte administrateur**. C'est le compte de la personne qui gère le serveur.
+- **Ensuite** : chaque personne reçoit un compte créé par l'administrateur (*Réglages → Administration → Comptes*), avec un mot de passe provisoire à changer à la première connexion.
+- **Mot de passe** : 10 caractères minimum. Pour le changer : *Réglages → Mon compte*.
+- **Mot de passe oublié** : demandez à l'administrateur de vous donner un mot de passe temporaire.
+- **Déconnexion** : touchez la pastille avec votre initiale en haut à droite (ou **Plus**), puis **Se déconnecter**.
 
-1. Ouvrez l'application et choisissez la date du jour.
-2. **Pré-remplissage automatique :** Les champs sont déjà remplis avec vos horaires habituels :
-   - Heure d'arrivée : `10:45`
-   - Heure de départ : `14:45`
-   - Pause repas : `0 min`
-   - Heures prévues : `4.0 h`
-   - Résultat direct : **4.0 h faites, écart = 0h00**.
-3. **Si vous avez fait des heures différentes ce jour-là :** Modifiez simplement l'heure d'arrivée ou de départ (ex. départ à `15h15` pour un nettoyage exceptionnel $\implies$ l'application calcule automatiquement `+ 0 h 30` de dépassement).
-4. **Modifier vos horaires habituels :**
-   - Cliquez sur **`⚙️ Modifier`** dans la barre des horaires habituels ou dans l'en-tête bleu.
-   - Vous pouvez ajuster votre arrivée, votre départ, votre pause repas (jusqu'à 1h ou plus) et vos heures attendues.
+### Se repérer
+- **En haut** : le mois affiché, le bouton **Annuler** et votre pastille de compte.
+- **En bas**, à portée de pouce : **Pointer** (formulaire du jour), **Congés**, **Bilan** (bilan annuel), **Envoyer** (transmettre le récapitulatif) et **Plus** (réglages, historique, mon compte, impression, thème, installation, administration, déconnexion).
+
+<p class="shots" align="center">
+  <img src="docs/screenshots/01_cockpit_mobile.png" width="240" alt="Écran d'accueil avec la barre de navigation du bas" />
+  <img src="docs/screenshots/06_menu_plus.png" width="240" alt="Menu Plus" />
+</p>
 
 ---
 
-## ⚖️ 3. Comprendre vos deux compteurs (La Vignette Phare)
+## 📲 2. Installer l'application sur le téléphone
 
-En haut de l'écran d'accueil, la **Vignette Phare** présente vos deux compteurs :
+### Android (Chrome)
+À la première ouverture, une fenêtre **« Installer Ma Badgeuse »** s'affiche :
+- si le bouton **Installer l'application** est présent, touchez-le : l'icône arrive sur l'écran d'accueil ;
+- sinon (accès sans HTTPS), suivez les 3 étapes affichées : **3 points** en haut à droite → **« Installer l'application »** ou **« Ajouter à l'écran d'accueil »** → **Ajouter**, puis touchez **C'est fait**.
+
+<p class="shots" align="center">
+  <img src="docs/screenshots/07_installation_android.png" width="240" alt="Fenêtre Installer Ma Badgeuse" />
+</p>
+
+Une fois installée (ou après **Ne plus proposer**), la fenêtre ne revient plus. **Plus tard** la reporte à la prochaine ouverture. Vous la retrouvez à tout moment dans **Plus → Installer l'application**.
+
+### iPhone (Safari)
+1. Ouvrez l'adresse de l'application dans **Safari**.
+2. Touchez **Partager** (carré avec une flèche), puis **« Sur l'écran d'accueil »** et **« Ajouter »**.
+
+> L'icône ouvre l'application en plein écran. Une connexion au serveur reste nécessaire (pas de mode hors ligne).
+
+---
+
+## ⏱️ 3. Pointer sa journée
+
+1. Vos **horaires habituels** sont pré-remplis (par défaut 10:45 - 14:45, 4 h, sans pause).
+2. Si votre journée a été différente, changez l'heure d'arrivée, de départ ou la pause : l'écart s'affiche aussitôt (ex. départ à 15:15 → **+0 h 30**).
+3. Touchez **Enregistrer ma journée**.
+4. Les jours de semaine, un bandeau **« Aujourd'hui non pointé »** permet d'enregistrer vos horaires habituels en un geste (**Oui, valider ma journée en 1 clic**).
+
+<p class="shots" align="center">
+  <img src="docs/screenshots/02_pointage_quotidien.png" width="240" alt="Formulaire de pointage du jour" />
+  <img src="docs/screenshots/03_livre_de_preuves.png" width="240" alt="Livre de preuves du mois" />
+</p>
+
+**Changer vos horaires habituels** : bouton **Modifier** à côté des horaires, ou *Plus → Réglages et horaires*. Vous pouvez y indiquer aussi votre nom, votre employeur et votre poste (affichés sur les relevés imprimés).
+
+---
+
+## 🏖️ 4. Absences, congés et périodes
+
+- Pour un jour d'absence : **Absence / Exceptionnel**, choisissez le **motif**, puis comment la journée compte :
+  - 🟢 **Validé au mois** : les heures comptent comme travaillées ;
+  - 🔴 **À rattraper** : les heures s'ajoutent à « Je dois » ;
+  - ⚪ **Neutre** : rien ne change.
+- Pour plusieurs jours (vacances, arrêt) : **Congés** dans la barre du bas. Les journées que vous aviez saisies à la main ne sont pas écrasées. La même fenêtre liste les périodes déjà posées et permet de les supprimer.
+
+<p class="shots" align="center">
+  <img src="docs/screenshots/05_poser_periode.png" width="240" alt="Poser une période de congés" />
+  <img src="docs/screenshots/04_bilan_annuel_scolaire.png" width="240" alt="Bilan annuel scolaire" />
+</p>
+
+---
+
+## ⚖️ 5. Comprendre vos deux compteurs
 
 ```
-┌─────────────────────────────────┬─────────────────────────────────┐
-│          HEURES SUP             │           À RATTRAPER           │
-│     Dues par l'employeur        │       Dues à l'employeur        │
-│                                 │                                 │
-│           + 2 h 00              │             0 h 00              │
-└─────────────────────────────────┴─────────────────────────────────┘
+┌───────────────────────────┬───────────────────────────┐
+│        ON ME DOIT         │          JE DOIS          │
+│   heures faites en plus   │   heures à rattraper      │
+│        + 2 h 00           │          0 h 00           │
+└───────────────────────────┴───────────────────────────┘
 ```
 
-### Comment fonctionne le rattrapage automatique (Compensation directe) ?
-C'est le bon sens même pour votre planning :
-- **Vos heures supplémentaires comblent immédiatement vos heures d'absence dues :** Si vous devez 4h d'absence (-4h) et effectuez 4h supplémentaires (+4h), vos heures supplémentaires remboursent immédiatement votre absence. Votre dette retombe à **0 h 00** ! Vous ne devez plus rien.
-- **Si vous faites plus d'heures supplémentaires que d'absence :** Ex. vous aviez 4h à rattraper et faites 6h sup $\implies$ votre dette est entièrement effacée (0h) et il vous reste **+ 2 h 00** en heures sup.
-- **Si vos heures sup ne suffisent pas :** Ex. vous aviez 4h à rattraper et faites 2h sup $\implies$ votre dette diminue et il ne vous reste que **- 2 h 00** à rattraper.
-- **Régularisation manuelle si payé :** Si l'employeur vous paie directement des heures sup sur votre fiche de paie (sans repos compensateur), cliquez sur **« Régulariser / Récupérer »**.
+- Vos heures en plus **effacent d'abord** vos heures à rattraper. Ex. : 4 h à rattraper puis 6 h en plus → **Je dois 0 h**, **On me doit +2 h**.
+- **Rajouter** : pour reporter un ancien solde.
+- **C'est réglé / C'est rattrapé** : quand l'employeur a payé ou que vous avez récupéré des heures (pas plus que le solde affiché, pas à une date future).
+- Les compteurs ne sont jamais remis à zéro à la fin du mois.
 
 ---
 
-## 🧹 4. Remise à Zéro Personnelle de ses Heures (RAZ 100% Sécurisée)
+## ✅ 6. Valider un mois
 
-Si vous souhaitez repartir sur une base propre ou réinitialiser vos données :
-
-1. Cliquez sur le bouton **`⚙️` (Réglages)** en haut de l'écran.
-2. Restez sur l'onglet **« Mes horaires & Mon compte »**.
-3. Faites défiler jusqu'en bas : vous trouverez l'encadré rouge intitulé :  
-   **« Remise à zéro de MON espace personnel »**.
-4. **Garantie d'étanchéité absolue :**
-   - Cette action efface **uniquement vos propres pointages, congés et régularisations**.
-   - Les heures et les comptes des autres membres de la famille restent **100% intacts et protégés**.
-   - Une copie de sauvegarde d'urgence de vos données est automatiquement enregistrée sur le serveur avant l'effacement.
-5. Pour confirmer, tapez le mot `RESET` dans la case et appuyez sur **« Effacer uniquement mes pointages personnels »**.
+Quand un mois est terminé et vérifié, touchez **Valider et verrouiller le mois** (encart de l'objectif du mois). Plus rien ne peut être modifié sur ce mois (journées, périodes, règlements, objectif) tant que vous ne l'avez pas **rouvert** avec le même bouton.
 
 ---
 
-## 🔐 5. Mode Administrateur & Sauvegardes Serveur
+## ↩️ 7. Annuler une erreur, voir l'historique
 
-Pour protéger le serveur contre les mauvaises manipulations, les options techniques sont verrouillées par un code PIN administrateur :
+- **Annuler** (en-tête) revient sur votre dernière modification.
+- *Plus → Historique des modifications* liste vos 100 dernières modifications ; celles qui ont été annulées sont barrées.
 
-1. Cliquez sur **`⚙️ Réglages`** puis sur le bouton **`🔒 Mode Admin`**.
-2. Entrez votre code PIN (par défaut : `1234`, modifiable à tout moment).
-3. Une fois déverrouillé, l'onglet **« 🛠️ Maintenance & Serveur »** vous permet de :
-   - Consulter la santé de la base SQLite.
-   - Télécharger une copie de sauvegarde `.sqlite` sur votre PC ou téléphone.
-   - Restaurer un point de sauvegarde Proxmox en 1 clic.
-   - Gérer les comptes utilisateurs.
+---
+
+## 📤 8. Transmettre, imprimer, exporter
+
+- **Envoyer** (barre du bas) : WhatsApp, e-mail, SMS ou copie du récapitulatif. Le numéro et l'adresse du destinataire sont enregistrés dans votre compte.
+- **Plus → Imprimer ou enregistrer le relevé (PDF)** : relevé du mois avec cadres de visa. Le bilan annuel s'imprime depuis **Bilan**.
+- **Export CSV** (Livre de preuves) : fichier à ouvrir dans Excel ou LibreOffice.
+
+---
+
+## 🧹 9. Effacer mes données
+
+*Réglages → Mon compte → Effacer mes données*, puis tapez `RESET`.
+- Efface vos journées, périodes, règlements, objectifs mensuels et votre historique.
+- **Conserve** votre compte et vos réglages. Les autres comptes ne sont pas touchés.
+- Une sauvegarde de sécurité est faite sur le serveur avant l'effacement (l'administrateur peut la restaurer).
+
+---
+
+## 🛠️ 10. Administration (comptes administrateurs)
+
+Le bouton **Admin** de l'en-tête (ou *Réglages → Administration*) permet de :
+- voir l'état de la base et l'optimiser ;
+- créer une sauvegarde, télécharger la base ou une sauvegarde, restaurer une sauvegarde du serveur ou un fichier `.sqlite` (le fichier est vérifié avant, une sauvegarde de sécurité est faite) ;
+- gérer les comptes : créer, donner un mot de passe temporaire, donner ou retirer le rôle administrateur, supprimer ;
+- ouvrir ou fermer l'inscription libre depuis l'écran de connexion ;
+- effacer les données de tous les comptes (`RESET_SERVEUR`).

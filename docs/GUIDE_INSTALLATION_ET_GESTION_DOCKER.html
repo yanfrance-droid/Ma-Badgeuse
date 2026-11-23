@@ -1,0 +1,583 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Guide d'Installation & Administration — Ma Badgeuse 0.3.0</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 12mm 14mm 12mm 14mm;
+      @bottom-right {
+        content: counter(page) " / " counter(pages);
+        font-size: 8pt;
+        color: #64748b;
+      }
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #1e293b;
+      line-height: 1.45;
+      font-size: 9.3pt;
+      background: #ffffff;
+      margin: 0;
+      padding: 0;
+    }
+
+    /* Cover / Header */
+    .header-box {
+      background: linear-gradient(135deg, #0d2b52 0%, #1e3a8a 100%);
+      color: #ffffff;
+      padding: 18px 20px;
+      border-radius: 10px;
+      margin-bottom: 14px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    .header-box h1 {
+      margin: 0 0 4px 0;
+      font-size: 19pt;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: #ffffff;
+    }
+    .header-box .subtitle {
+      font-size: 10.5pt;
+      color: #93c5fd;
+      margin-bottom: 10px;
+      font-weight: 500;
+    }
+    .meta-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      font-size: 8.5pt;
+      color: #cbd5e1;
+      border-top: 1px solid rgba(255, 255, 255, 0.2);
+      padding-top: 8px;
+    }
+    .meta-bar span {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .badge {
+      background: #3b82f6;
+      color: #fff;
+      padding: 2px 7px;
+      border-radius: 9999px;
+      font-weight: 600;
+      font-size: 8pt;
+      display: inline-block;
+    }
+
+    h2 {
+      color: #0d2b52;
+      font-size: 12pt;
+      font-weight: 700;
+      border-bottom: 2px solid #e2e8f0;
+      padding-bottom: 3px;
+      margin-top: 14px;
+      margin-bottom: 8px;
+      page-break-after: avoid;
+      break-after: avoid;
+    }
+
+    h3 {
+      color: #1e3a8a;
+      font-size: 10pt;
+      font-weight: 600;
+      margin-top: 10px;
+      margin-bottom: 4px;
+      page-break-after: avoid;
+      break-after: avoid;
+    }
+
+    p {
+      margin: 0 0 6px 0;
+    }
+
+    ul, ol {
+      margin: 0 0 8px 0;
+      padding-left: 18px;
+    }
+    li {
+      margin-bottom: 3px;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      background: #f1f5f9;
+      color: #0f172a;
+      padding: 1px 4px;
+      border-radius: 4px;
+      font-size: 8.5pt;
+    }
+
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 8px 11px;
+      border-radius: 6px;
+      font-size: 8.2pt;
+      line-height: 1.35;
+      overflow-x: auto;
+      margin: 4px 0 8px 0;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    /* Callouts */
+    .callout {
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin: 8px 0;
+      font-size: 8.7pt;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .callout-info {
+      background: #eff6ff;
+      border-left: 4px solid #3b82f6;
+      color: #1e40af;
+    }
+    .callout-success {
+      background: #ecfdf5;
+      border-left: 4px solid #10b981;
+      color: #065f46;
+    }
+    .callout-warning {
+      background: #fffbeb;
+      border-left: 4px solid #f59e0b;
+      color: #92400e;
+    }
+    .callout strong {
+      display: block;
+      margin-bottom: 2px;
+      font-size: 9pt;
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 6px 0 10px 0;
+      font-size: 8.5pt;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    th {
+      background: #f8fafc;
+      color: #334155;
+      text-align: left;
+      font-weight: 600;
+      padding: 5px 8px;
+      border-bottom: 2px solid #cbd5e1;
+      border-top: 1px solid #e2e8f0;
+    }
+    td {
+      padding: 5px 8px;
+      border-bottom: 1px solid #e2e8f0;
+      vertical-align: top;
+    }
+    tr:nth-child(even) td {
+      background: #fbfcfe;
+    }
+
+    .step-number {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      background: #0d2b52;
+      color: #ffffff;
+      border-radius: 50%;
+      text-align: center;
+      line-height: 18px;
+      font-size: 7.8pt;
+      font-weight: 700;
+      margin-right: 5px;
+    }
+
+    .page-break {
+      page-break-before: always;
+      break-before: always;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin: 8px 0;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .card {
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: #ffffff;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .card h4 {
+      margin: 0 0 3px 0;
+      color: #0d2b52;
+      font-size: 9pt;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- PAGE 1 -->
+  <!-- HEADER -->
+  <div class="header-box">
+    <div style="margin-bottom: 5px;">
+      <span class="badge">DOCKER PROD</span>
+      <span class="badge" style="background:#0ea5e9;">VERSION 0.3.0</span>
+      <span class="badge" style="background:#10b981;">PROXMOX &amp; DOCKAGE READY</span>
+    </div>
+    <h1>Guide d'Installation &amp; Administration</h1>
+    <div class="subtitle">Déploiement complet, script de gestion interactif, sécurité par rôle et maintenance pas-à-pas</div>
+    <div class="meta-bar">
+      <span><strong>Projet :</strong> Ma Badgeuse (Suivi Heures Pro)</span>
+      <span><strong>Port par défaut :</strong> 3000 (HTTP)</span>
+      <span><strong>Auteur :</strong> Yann &amp; DeepMind Team</span>
+      <span><strong>Mise à jour :</strong> Version 0.3.0 (Novembre 2026)</span>
+    </div>
+  </div>
+
+  <!-- SECTION 1 -->
+  <h2>1. Introduction &amp; Principes Clés</h2>
+  <p>
+    <strong>Ma Badgeuse</strong> est une application web moderne (React 18 + Node.js 24 Alpine + SQLite 3 en mode WAL) conçue pour enregistrer et calculer avec rigueur le temps de travail des agents scolaires et périscolaires.
+  </p>
+  <p>
+    Le déploiement est intégralement conteneurisé avec <strong>Docker &amp; Docker Compose</strong>. Cela garantit :
+  </p>
+  <ul>
+    <li><strong>Zéro dépendance complexe sur l'hôte :</strong> Aucun besoin d'installer Node, npm, python ou des compilateurs sur votre serveur Proxmox / Debian. Tout est isolé dans le conteneur.</li>
+    <li><strong>Persistance absolue des données :</strong> La base SQLite (<code>database.sqlite</code>) vit dans un dossier monté sur votre machine hôte (<code>/opt/ma-badgeuse/data/</code>). Les mises à jour du conteneur ne détruisent <strong>jamais</strong> vos heures pointées.</li>
+    <li><strong>Sécurité renforcée (Conteneur non-root) :</strong> Le conteneur s'exécute avec l'utilisateur standard <code>node</code> (UID 1000) et un système de fichiers en lecture seule (<code>read_only</code>), sans privilèges d'administration sur l'hôte.</li>
+    <li><strong>Coexistence parfaite avec Budget Pro :</strong> Ma Badgeuse utilise le port <strong>3000</strong> tandis que Budget Pro utilise le port <strong>3001</strong>. Les deux tournent simultanément sur le même serveur sans aucun conflit.</li>
+  </ul>
+
+  <!-- SECTION 2 -->
+  <h2>2. Prérequis sur votre Serveur Linux / Proxmox</h2>
+  <p>Votre serveur (qu'il s'agisse d'une VM Debian/Ubuntu ou d'un conteneur LXC Proxmox) doit disposer des éléments suivants :</p>
+  
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 25%;">Outil</th>
+        <th style="width: 35%;">Commande de vérification</th>
+        <th style="width: 40%;">Commande d'installation (si manquant)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Docker Engine</strong></td>
+        <td><code>docker --version</code></td>
+        <td><code>sudo apt update &amp;&amp; sudo apt install -y docker.io</code></td>
+      </tr>
+      <tr>
+        <td><strong>Docker Compose v2</strong></td>
+        <td><code>docker compose version</code></td>
+        <td><code>sudo apt install -y docker-compose-plugin</code></td>
+      </tr>
+      <tr>
+        <td><strong>Git</strong></td>
+        <td><code>git --version</code></td>
+        <td><code>sudo apt install -y git</code></td>
+      </tr>
+      <tr>
+        <td><strong>Curl</strong></td>
+        <td><code>curl --version</code></td>
+        <td><code>sudo apt install -y curl</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- PAGE 2 -->
+  <div class="page-break"></div>
+
+  <!-- SECTION 3 -->
+  <h2>3. Répertoire Recommandé &amp; Arborescence</h2>
+  <p>
+    Conformément aux standards Linux et pour assurer une compatibilité parfaite avec <strong>Dockage</strong>, l'application s'installe dans le répertoire : <code>/opt/ma-badgeuse</code> (tout en minuscules).
+  </p>
+  
+  <pre><code>/opt/ma-badgeuse/
+├── docker-compose.yml        # Orchestration Docker (port 3000, volumes, durcissement)
+├── Dockerfile                # Recette multi-stage (Node 24 Alpine, build React + backend)
+├── .env                      # Configuration d'environnement (copié depuis .env.example)
+├── gestion-ma-badgeuse.sh    # Le script interactif tout-en-un d'administration
+├── README.md &amp; USER_GUIDE.md # Documentations technique et utilisateur
+├── data/                     # [PERSISTANT, uid 1000] Contient database.sqlite (vos données)
+│   └── database.sqlite
+└── backups/                  # [PERSISTANT, uid 1000] Sauvegardes horodatées
+    ├── auto_backup_*.sqlite  # Sauvegardes quotidiennes automatiques (14 conservées)
+    ├── safety_*.sqlite       # Sauvegardes de sécurité avant mise à jour (20 conservées)
+    └── tmp/                  # Dossier tampon des imports et restaurations</code></pre>
+
+  <div class="callout callout-warning">
+    <strong>⚠️ Règle d'or des droits et de la persistance :</strong>
+    Les dossiers <code>data/</code> et <code>backups/</code> sont des volumes montés depuis l'hôte. Comme le conteneur tourne avec l'utilisateur sécurisé non-root <code>node</code>, ces dossiers doivent appartenir à l'<strong>UID 1000</strong> (commande : <code>chown -R 1000:1000 data backups</code>). Vos données restent <strong>toujours intactes</strong> lors des mises à jour.
+  </div>
+
+  <!-- SECTION 4 -->
+  <h2>4. Première Installation Pas-à-Pas (En 3 minutes)</h2>
+  
+  <p>Connectez-vous en SSH à votre serveur Proxmox / Linux, puis copiez-collez simplement les 4 commandes suivantes :</p>
+
+  <p><span class="step-number">1</span> <strong>Cloner le projet GitHub dans /opt :</strong></p>
+  <pre><code>cd /opt
+sudo git clone https://github.com/yanfrance-droid/Ma-Badgeuse.git /opt/ma-badgeuse
+cd /opt/ma-badgeuse</code></pre>
+
+  <p><span class="step-number">2</span> <strong>Rendre le script exécutable et le lancer :</strong></p>
+  <pre><code>sudo chmod +x gestion-ma-badgeuse.sh
+sudo ./gestion-ma-badgeuse.sh</code></pre>
+
+  <p><span class="step-number">3</span> <strong>Choisir l'option 1 dans le menu :</strong></p>
+  <p>Tapez <code>1</code> puis validez avec <kbd>Entrée</kbd>. Le script initialise les permissions UID 1000, compile l'image Docker Node 24 Alpine, démarre le conteneur et vérifie son bon fonctionnement.</p>
+
+  <div class="callout callout-success">
+    <strong>✅ Installation terminée avec succès !</strong>
+    L'application est immédiatement accessible : <code style="font-weight: bold;">http://IP_DE_VOTRE_SERVEUR:3000</code>
+  </div>
+
+  <div class="callout callout-info">
+    <strong>👑 Création immédiate du compte Administrateur :</strong>
+    Dès la première ouverture, créez votre compte principal. <strong>Le premier compte créé reçoit automatiquement le rôle Administrateur</strong> (remplace l'ancien code PIN 1234). Choisissez un mot de passe sécurisé d'au moins 10 caractères. L'inscription libre se ferme ensuite automatiquement pour protéger votre serveur.
+  </div>
+
+  <!-- PAGE 3 -->
+  <div class="page-break"></div>
+
+  <!-- SECTION 5 -->
+  <h2>5. Le Script Interactif : <code>gestion-ma-badgeuse.sh</code></h2>
+  <p>Pour administrer votre application au quotidien sans commande compliquée, lancez simplement :</p>
+  <pre><code>sudo /opt/ma-badgeuse/gestion-ma-badgeuse.sh</code></pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>Option 1 : Nouvelle Installation</h4>
+      <p style="font-size: 8.2pt; color: #475569; margin: 0;">
+        Construit l'image Docker, initialise les permissions UID 1000, configure l'environnement et démarre l'application.
+      </p>
+    </div>
+    <div class="card">
+      <h4>Option 2 : Mettre à jour depuis GitHub</h4>
+      <p style="font-size: 8.2pt; color: #475569; margin: 0;">
+        Sauvegarde SQLite à chaud, téléchargement du nouveau code, rebuild sur Node 24, vérification des droits et redémarrage propre.
+      </p>
+    </div>
+    <div class="card">
+      <h4>Option 3 : Sauvegarder la base</h4>
+      <p style="font-size: 8.2pt; color: #475569; margin: 0;">
+        Génère une copie cohérente immédiate (API SQLite <code>.backup</code>) dans <code>backups/safety_before_update_*.sqlite</code>.
+      </p>
+    </div>
+    <div class="card">
+      <h4>Option 4 : Voir l'état et les logs</h4>
+      <p style="font-size: 8.2pt; color: #475569; margin: 0;">
+        Affiche l'état en direct du conteneur (UP, HEALTHY, Uptime) et fait défiler les journaux récents du serveur.
+      </p>
+    </div>
+    <div class="card">
+      <h4>Option 5 : Redémarrer l'application</h4>
+      <p style="font-size: 8.2pt; color: #475569; margin: 0;">
+        Relance le conteneur en quelques secondes avec réévaluation du contrôle de santé en cas de besoin.
+      </p>
+    </div>
+    <div class="card">
+      <h4>Option 6 : Quitter</h4>
+      <p style="font-size: 8.2pt; color: #475569; margin: 0;">
+        Ferme le menu d'administration interactif et vous redonne la main sur votre terminal bash.
+      </p>
+    </div>
+  </div>
+
+  <!-- SECTION 6 -->
+  <h2>6. Accès Réseau, Ports &amp; Connexion Nomade</h2>
+
+  <h3>Trouver l'adresse IP locale de votre serveur :</h3>
+  <pre><code>hostname -I</code>   # ou   <code>ip -brief address show</code></pre>
+
+  <h3>Tableau des Ports Réseau :</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Application</th>
+        <th>Port Hôte</th>
+        <th>URL d'accès local</th>
+        <th>Statut</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Ma Badgeuse</strong></td>
+        <td><strong>3000</strong></td>
+        <td><code>http://192.168.1.X:3000</code></td>
+        <td><span style="color: #10b981; font-weight: bold;">● Actif</span></td>
+      </tr>
+      <tr>
+        <td><strong>Budget Pro</strong></td>
+        <td><strong>3001</strong></td>
+        <td><code>http://192.168.1.X:3001</code></td>
+        <td><span style="color: #3b82f6; font-weight: bold;">● Indépendant (aucun conflit)</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout-success">
+    <strong>🛡️ Recommandation : Accès nomade ultra-sécurisé avec WireGuard</strong>
+    Si vous utilisez un VPN WireGuard (intégré à votre Freebox ou hébergé chez vous) : <strong>vous n'avez aucun port web à ouvrir sur Internet !</strong> Dès que WireGuard est actif sur votre smartphone en 4G/5G, vous êtes comme à la maison : ouvrez simplement <code>http://192.168.1.X:3000</code>. Le trafic est intégralement chiffré de bout en bout.
+  </div>
+
+  <p style="font-size: 8.2pt; color: #64748b; margin-bottom: 0;">
+    <em>Pour un accès public HTTPS sans VPN : utilisez un reverse proxy tel que Caddy ou Nginx Proxy Manager (ex: avec un nom de domaine Freebox <code>*.freeboxos.fr</code>) et activez <code>COOKIE_SECURE=true</code> et <code>TRUST_PROXY=1</code> dans votre fichier <code>.env</code>.</em>
+  </p>
+
+  <!-- PAGE 4 -->
+  <div class="page-break"></div>
+
+  <!-- SECTION 7 -->
+  <h2>7. Installation sur Smartphone (PWA — Application Mobile)</h2>
+  <p>Ma Badgeuse est spécialement ergonomisée pour être utilisée <strong>comme une application native sur smartphone</strong> :</p>
+  
+  <div class="grid-2">
+    <div class="card" style="border-top: 4px solid #0284c7;">
+      <h4>📱 Sur iPhone (Safari)</h4>
+      <ol style="margin-left: -4px; font-size: 8.4pt;">
+        <li>Ouvrez <strong>Safari</strong> sur <code>http://IP_SERVEUR:3000</code>.</li>
+        <li>Touchez le bouton de <strong>Partage</strong> (carré avec la flèche vers le haut).</li>
+        <li>Faites défiler et touchez <strong>« Sur l'écran d'accueil »</strong>.</li>
+        <li>Touchez <strong>« Ajouter »</strong> en haut à droite.</li>
+      </ol>
+      <p style="font-size: 7.8pt; color: #0369a1; margin-top: 4px;">
+        <em>L'icône s'installe en 5 secondes et s'ouvre en plein écran sans barre Safari.</em>
+      </p>
+    </div>
+
+    <div class="card" style="border-top: 4px solid #10b981;">
+      <h4>🤖 Sur Android (Chrome)</h4>
+      <ol style="margin-left: -4px; font-size: 8.4pt;">
+        <li>Ouvrez <strong>Chrome</strong> sur <code>http://IP_SERVEUR:3000</code>.</li>
+        <li>Touchez les <strong>3 petits points verticaux ⋮</strong> en haut à droite.</li>
+        <li>Touchez <strong>« Ajouter à l'écran d'accueil »</strong> (ou « Installer l'application »).</li>
+        <li>Confirmez en touchant <strong>« Ajouter »</strong>.</li>
+      </ol>
+      <p style="font-size: 7.8pt; color: #047857; margin-top: 4px;">
+        <em>L'application se lance en plein écran avec barre de navigation tactile au pouce.</em>
+      </p>
+    </div>
+  </div>
+
+  <!-- SECTION 8 -->
+  <h2>8. Sécurité, Rôles Administrateurs, Sauvegardes &amp; Restauration</h2>
+
+  <h3>Rôles et Sécurité (Fin du code PIN 1234)</h3>
+  <p>
+    Dans la version 0.3.0, le code PIN partagé d'usine a été supprimé au profit d'un véritable système de <strong>rôles utilisateurs</strong> :
+  </p>
+  <ul>
+    <li><strong>Rôle Administrateur :</strong> Réservé au gestionnaire du système. Donne accès au menu <strong>« Plus ➔ Administration »</strong> pour consulter la santé de la base, gérer les sauvegardes, créer des comptes pour les collègues, et ouvrir/fermer les inscriptions.</li>
+    <li><strong>Mots de passe Scrypt :</strong> Les mots de passe sont salés et hachés avec l'algorithme robuste <code>scrypt</code> (minimum 10 caractères). Les sessions sont protégées par cookie sécurisé HttpOnly.</li>
+    <li><strong>Secours en cas de mot de passe administrateur oublié :</strong> Si l'administrateur égare son mot de passe, une commande console permet de réinitialiser l'accès depuis le serveur :
+      <pre><code>docker exec -it ma-badgeuse node backend/dist/scripts/resetPassword.js &lt;identifiant&gt; --admin</code></pre>
+      Le script affichera un mot de passe temporaire à changer obligatoirement à la prochaine connexion.
+    </li>
+  </ul>
+
+  <h3>Sauvegardes automatiques &amp; Restauration</h3>
+  <ul>
+    <li><strong>Sauvegardes quotidiennes :</strong> Déclenchées automatiquement une fois par jour (<code>auto_backup_*.sqlite</code>, 14 conservées).</li>
+    <li><strong>Sauvegardes de sécurité :</strong> Créées avant chaque mise à jour ou restauration (<code>safety_*.sqlite</code>, 20 conservées).</li>
+    <li><strong>Restauration en un clic (Interface) :</strong> Rendez-vous dans <em>Plus ➔ Administration ➔ Sauvegardes</em> pour restaurer ou télécharger une sauvegarde. Le serveur effectue une vérification d'intégrité avant d'appliquer la base.</li>
+    <li><strong>Restauration en ligne de commande (Secours) :</strong>
+      <pre><code># 1. Arrêter le conteneur
+cd /opt/ma-badgeuse &amp;&amp; docker compose down
+
+# 2. Supprimer les fichiers temporaires WAL et restaurer la sauvegarde
+sudo rm -f data/database.sqlite-wal data/database.sqlite-shm
+sudo cp backups/safety_before_update_XXXX.sqlite data/database.sqlite
+sudo chown 1000:1000 data/database.sqlite
+
+# 3. Relancer l'application
+docker compose up -d</code></pre>
+    </li>
+  </ul>
+
+  <!-- PAGE 5 -->
+  <div class="page-break"></div>
+
+  <!-- SECTION 9 -->
+  <h2>9. FAQ, Dépannage &amp; Commandes Utiles</h2>
+
+  <div class="callout callout-info">
+    <strong>Q : Comment vérifier que l'application répond correctement ?</strong>
+    Tapez depuis votre terminal : <code>curl -I http://localhost:3000/api/health</code>.<br>
+    Le serveur doit répondre avec le code HTTP <code>200 OK</code> et le statut de la base SQLite.
+  </div>
+
+  <div class="callout callout-warning">
+    <strong>Q : Le conteneur plante au démarrage avec « EACCES: permission denied, mkdir '/app/backups/tmp' » ?</strong>
+    Cette erreur survient lorsque les dossiers de l'hôte n'appartiennent pas à l'UID 1000 du conteneur. Exécutez simplement :<br>
+    <code>sudo chown -R 1000:1000 /opt/ma-badgeuse/data /opt/ma-badgeuse/backups &amp;&amp; docker compose restart</code>
+  </div>
+
+  <div class="callout callout-info">
+    <strong>Q : Dans Dockage, je vois « ma-badgeuse » et « Ma-Badgeuse » ?</strong>
+    Linux est sensible à la casse. Pour n'avoir qu'une seule stack propre dans Dockage, utilisez toujours <code>/opt/ma-badgeuse</code> en minuscules et supprimez l'ancien dossier doublon : <code>rm -rf /opt/Ma-Badgeuse</code>.
+  </div>
+
+  <div class="callout callout-info">
+    <strong>Q : Comment promouvoir un utilisateur Administrateur directement en console ?</strong>
+    Si un compte a été créé en utilisateur standard et doit devenir administrateur :<br>
+    <code>docker exec ma-badgeuse sqlite3 /app/data/database.sqlite "UPDATE users SET is_admin = 1 WHERE username = 'yann';"</code>
+  </div>
+
+  <h3>Tableau Récapitulatif des Commandes Courantes</h3>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 35%;">Action</th>
+        <th style="width: 65%;">Commande à exécuter</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Lancer le script interactif</strong></td>
+        <td><code>sudo /opt/ma-badgeuse/gestion-ma-badgeuse.sh</code></td>
+      </tr>
+      <tr>
+        <td><strong>Voir les logs en direct</strong></td>
+        <td><code>docker logs -f ma-badgeuse</code></td>
+      </tr>
+      <tr>
+        <td><strong>Redémarrer l'application</strong></td>
+        <td><code>cd /opt/ma-badgeuse &amp;&amp; docker compose restart</code></td>
+      </tr>
+      <tr>
+        <td><strong>Vérifier les droits UID 1000</strong></td>
+        <td><code>ls -ld /opt/ma-badgeuse/data /opt/ma-badgeuse/backups</code></td>
+      </tr>
+      <tr>
+        <td><strong>Lister les comptes et rôles</strong></td>
+        <td><code>docker exec ma-badgeuse sqlite3 /app/data/database.sqlite "SELECT id, username, is_admin FROM users;"</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div style="margin-top: 25px; text-align: center; font-size: 8.5pt; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 10px;">
+    Ma Badgeuse 0.3.0 — Guide Officiel d'Installation &amp; Administration Serveur — Dépôt : <code>https://github.com/yanfrance-droid/Ma-Badgeuse.git</code>
+  </div>
+
+</body>
+</html>

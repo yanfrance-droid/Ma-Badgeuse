@@ -1,52 +1,20 @@
-import path from 'path';
+/**
+ * Isolation des tests : à importer EN PREMIER dans chaque fichier de test.
+ * Chaque fichier (exécuté dans son propre processus par node:test) reçoit une
+ * base et un dossier de sauvegardes neufs dans le dossier temporaire du système.
+ * La base réelle (data/database.sqlite) n'est jamais ouverte.
+ */
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
-// 1. Définir un chemin de base de données de test dédié et isolé
-const testDbPath = path.resolve(__dirname, '../../../data/test_audit.sqlite');
-process.env.DB_PATH = testDbPath;
-process.env.BACKUP_DIR = path.resolve(__dirname, '../../../data/test_backups');
+export const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'ma-badgeuse-test-'));
+process.env.DB_PATH = path.join(TEST_ROOT, 'test.sqlite');
+process.env.BACKUP_DIR = path.join(TEST_ROOT, 'backups');
+process.env.FRONTEND_DIST = path.join(TEST_ROOT, 'no-frontend');
+process.env.COOKIE_SECURE = 'false';
 
-function cleanupTestFiles() {
-  const files = [
-    testDbPath,
-    `${testDbPath}-wal`,
-    `${testDbPath}-shm`
-  ];
-  for (const f of files) {
-    if (fs.existsSync(f)) {
-      try {
-        fs.unlinkSync(f);
-      } catch {}
-    }
-  }
-  // Nettoyer le dossier temporaire de test de backup
-  const testBackupDir = process.env.BACKUP_DIR;
-  if (testBackupDir && fs.existsSync(testBackupDir)) {
-    try {
-      fs.rmSync(testBackupDir, { recursive: true, force: true });
-    } catch {}
-  }
+/** Supprime le dossier temporaire du test (appelé à la fin de chaque fichier). */
+export function cleanupTestRoot(): void {
+  fs.rmSync(TEST_ROOT, { recursive: true, force: true });
 }
-
-// Nettoyage avant exécution
-cleanupTestFiles();
-
-// 2. Importer dynamiquement la suite de tests APRÈS avoir positionné DB_PATH
-import('./comprehensiveAudit.test.js')
-  .then((mod) => mod.runComprehensiveAudit())
-  .then((res) => {
-    // Nettoyage après exécution
-    cleanupTestFiles();
-    if (res.failed > 0) {
-      console.error(`\n❌ ÉCHEC DU BANC D'ESSAI : ${res.failed} test(s) échoué(s).\n`);
-      process.exit(1);
-    } else {
-      console.log(`\n✨ BANC D'ESSAI RÉUSSI À 100% (La base réelle n'a pas été touchée).\n`);
-      process.exit(0);
-    }
-  })
-  .catch((err) => {
-    cleanupTestFiles();
-    console.error('Erreur critique pendant le banc d\'essai :', err);
-    process.exit(1);
-  });

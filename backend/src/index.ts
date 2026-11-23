@@ -1,91 +1,44 @@
-import express, { Request, Response, NextFunction } from 'express';
-import cors from 'cors';
-import path from 'path';
-import fs from 'fs';
 import dotenv from 'dotenv';
-import { initDatabase } from './database';
-import { startAutoBackupSchedule } from './services/backupService';
-import { entriesRouter } from './routes/entries';
-import { periodsRouter } from './routes/periods';
-import { regularizationsRouter } from './routes/regularizations';
-import { targetsRouter } from './routes/targets';
-import { statusRouter } from './routes/status';
-import { auditRouter } from './routes/audit';
-import { summaryRouter } from './routes/summary';
-import { backupRouter } from './routes/backup';
-import { settingsRouter } from './routes/settings';
-import { authRouter } from './routes/auth';
-import { authMiddleware } from './middleware/auth';
-
 dotenv.config();
 
-const app = express();
+import { closeDatabase, initDatabase } from './database';
+import { startAutoBackupSchedule, stopAutoBackupSchedule } from './services/backupService';
+import { APP_VERSION, createApp } from './app';
+
 const PORT = Number(process.env.PORT) || 3000;
+// Dans le conteneur Docker, 0.0.0.0 est nécessaire ; c'est docker-compose qui
+// choisit sur quelle adresse de l'hôte le port est publié (BIND_ADDRESS).
+const HOST = process.env.HOST || '0.0.0.0';
 
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Healthcheck pour Docker & Proxmox
-app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({
-    status: 'ok',
-    app: 'Ma Badgeuse',
-    version: '0.1.0',
-    mode: 'WAL',
-    timestamp: new Date().toISOString()
+async function startServer(): Promise<void> {
+  await initDatabase();
+  startAutoBackupSchedule();
+  const server = createApp().listen(PORT, HOST, () => {
+    console.log(`[Ma Badgeuse ${APP_VERSION}] Serveur démarré sur http://${HOST}:${PORT}`);
   });
-});
 
-// Enregistrement des routes API publiques
-app.use('/api/auth', authRouter);
-app.use('/api/status', statusRouter);
-
-// Middleware d'authentification pour toutes les routes de données
-app.use('/api', authMiddleware);
-
-// Enregistrement des routes API protégées
-app.use('/api/entries', entriesRouter);
-app.use('/api/periods', periodsRouter);
-app.use('/api/regularizations', regularizationsRouter);
-app.use('/api/targets', targetsRouter);
-app.use('/api/audit', auditRouter);
-app.use('/api/summary', summaryRouter);
-app.use('/api/backup', backupRouter);
-app.use('/api/settings', settingsRouter);
-
-// Service des fichiers statiques du frontend (mode production Docker)
-const clientBuildPath = path.resolve(__dirname, '../../frontend/dist');
-if (fs.existsSync(clientBuildPath)) {
-  app.use(express.static(clientBuildPath));
-  app.get('*', (_req: Request, res: Response) => {
-    res.sendFile(path.join(clientBuildPath, 'index.html'));
-  });
-}
-
-// Gestion globale des erreurs
-app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-  console.error('[Server Error]', err);
-  res.status(500).json({ success: false, error: err.message || 'Erreur interne du serveur.' });
-});
-
-// Démarrage et initialisation de la base
-async function startServer() {
-  try {
-    await initDatabase();
-    startAutoBackupSchedule();
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`=========================================`);
-      console.log(`🕒 Ma Badgeuse - Serveur démarré`);
-      console.log(`📍 Port : ${PORT}`);
-      console.log(`💾 Base : SQLite Mode WAL`);
-      console.log(`🌐 Accès : http://localhost:${PORT}`);
-      console.log(`=========================================`);
+  let stopping = false;
+  const shutdown = (signal: string) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`[Ma Badgeuse] ${signal} reçu : arrêt propre en cours...`);
+    stopAutoBackupSchedule();
+    server.close(async () => {
+      try {
+        await closeDatabase();
+      } catch (err) {
+        console.error('[Ma Badgeuse] Fermeture de la base :', err);
+      }
+      process.exit(0);
     });
-  } catch (err) {
-    console.error('Erreur critique au démarrage du serveur :', err);
-    process.exit(1);
-  }
+    // Filet de sécurité si des connexions restent ouvertes.
+    setTimeout(() => process.exit(1), 10000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('Erreur critique au démarrage du serveur :', err);
+  process.exit(1);
+});

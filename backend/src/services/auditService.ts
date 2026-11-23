@@ -1,21 +1,24 @@
 import { db } from '../database';
 import { ActionType, AuditLog } from '../types';
+import { assertMonthsOpen } from './settingsService';
 
 /**
- * Enregistre une modification dans la table audit_logs
+ * Enregistre une modification dans le journal. À appeler dans la même
+ * transaction que la modification elle-même.
  */
 export async function logAudit(
-  userId: number = 1,
+  userId: number,
   entityName: string,
   entityId: number,
   actionType: ActionType,
-  oldValues: any,
-  newValues: any,
-  reason: string | null = null
+  oldValues: unknown,
+  newValues: unknown,
+  reason: string | null = null,
+  revertsLogId: number | null = null
 ): Promise<number> {
   const result = await db.run(
-    `INSERT INTO audit_logs (user_id, entity_name, entity_id, action_type, old_values, new_values, reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO audit_logs (user_id, entity_name, entity_id, action_type, old_values, new_values, reason, reverts_log_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       userId,
       entityName,
@@ -23,197 +26,200 @@ export async function logAudit(
       actionType,
       oldValues ? JSON.stringify(oldValues) : null,
       newValues ? JSON.stringify(newValues) : null,
-      reason
+      reason,
+      revertsLogId
     ]
   );
   return result.lastID;
 }
 
-/**
- * Récupère les logs d'audit récents
- */
-export async function getRecentAuditLogs(userId: number = 1, limit: number = 50): Promise<AuditLog[]> {
+function parseJson(value: string | null): any {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+export async function getRecentAuditLogs(userId: number, limit: number): Promise<AuditLog[]> {
   const rows = await db.all<any>(
-    `SELECT * FROM audit_logs WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+    `SELECT * FROM audit_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?`,
     [userId, limit]
   );
   return rows.map((r) => ({
     ...r,
-    old_values: r.old_values ? JSON.parse(r.old_values) : null,
-    new_values: r.new_values ? JSON.parse(r.new_values) : null
+    old_values: parseJson(r.old_values),
+    new_values: parseJson(r.new_values)
   }));
 }
 
-/**
- * Annuler la dernière action (Undo)
- */
-export async function undoLastAction(userId: number = 1): Promise<{ success: boolean; message: string; restoredLog?: any }> {
-  // 1. Récupérer les identifiants d'actions déjà annulées
-  const restoredLogs = await db.all<any>(`
-    SELECT reason FROM audit_logs WHERE user_id = ? AND action_type = 'RESTORE'
-  `, [userId]);
-  const undoneIds = new Set<number>();
-  for (const r of restoredLogs) {
-    const m = r.reason?.match(/#(\d+)/);
-    if (m) undoneIds.add(Number(m[1]));
+class UndoRefused extends Error {}
+
+const ENTRY_COLUMNS = [
+  'expected_hours',
+  'start_time',
+  'end_time',
+  'break_minutes',
+  'actual_hours',
+  'manual_actual_override',
+  'status_id',
+  'period_id',
+  'is_override',
+  'absence_reason',
+  'absence_impact',
+  'notes'
+] as const;
+
+function entryValues(snapshot: Record<string, unknown>): unknown[] {
+  return ENTRY_COLUMNS.map((col) => (snapshot[col] === undefined ? null : snapshot[col]));
+}
+
+async function restoreEntrySnapshot(userId: number, snapshot: any): Promise<void> {
+  const setClause = ENTRY_COLUMNS.map((c) => `${c} = ?`).join(', ');
+  await db.run(`UPDATE daily_entries SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [
+    ...entryValues(snapshot),
+    snapshot.id,
+    userId
+  ]);
+}
+
+async function reinsertEntry(userId: number, snapshot: any): Promise<void> {
+  const existing = await db.get(`SELECT id FROM daily_entries WHERE user_id = ? AND entry_date = ?`, [userId, snapshot.entry_date]);
+  if (existing) {
+    throw new UndoRefused(`Une autre journée a été saisie le ${snapshot.entry_date} depuis : annulation impossible.`);
   }
-
-  // 2. Trouver la dernière action de type réversible non encore annulée
-  const candidateLogs = await db.all<any>(`
-    SELECT * FROM audit_logs 
-    WHERE user_id = ? AND action_type IN ('INSERT', 'UPDATE', 'DELETE', 'REGULARIZE')
-    ORDER BY id DESC 
-    LIMIT 30
-  `, [userId]);
-
-  const lastLog = candidateLogs.find((l) => !undoneIds.has(l.id));
-
-  if (!lastLog) {
-    return { success: false, message: "Aucune action récente à annuler." };
-  }
-
-  const oldValues = lastLog.old_values ? JSON.parse(lastLog.old_values) : null;
-  const newValues = lastLog.new_values ? JSON.parse(lastLog.new_values) : null;
-
-  if (lastLog.entity_name === 'daily_entries') {
-    if (lastLog.action_type === 'UPDATE' && oldValues) {
-      await db.run(
-        `UPDATE daily_entries SET 
-          expected_hours = ?, start_time = ?, end_time = ?, break_minutes = ?,
-          actual_hours = ?, manual_actual_override = ?, status_id = ?, period_id = ?,
-          is_override = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ? AND user_id = ?`,
-        [
-          oldValues.expected_hours,
-          oldValues.start_time,
-          oldValues.end_time,
-          oldValues.break_minutes,
-          oldValues.actual_hours,
-          oldValues.manual_actual_override,
-          oldValues.status_id,
-          oldValues.period_id,
-          oldValues.is_override,
-          oldValues.notes,
-          lastLog.entity_id,
-          lastLog.user_id || userId
-        ]
-      );
-    } else if (lastLog.action_type === 'INSERT') {
-      await db.run(`DELETE FROM daily_entries WHERE id = ? AND user_id = ?`, [lastLog.entity_id, lastLog.user_id || userId]);
-    } else if (lastLog.action_type === 'DELETE' && oldValues) {
-      await db.run(
-        `INSERT INTO daily_entries (id, user_id, entry_date, expected_hours, start_time, end_time, break_minutes, actual_hours, manual_actual_override, status_id, period_id, is_override, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          oldValues.id,
-          lastLog.user_id || userId,
-          oldValues.entry_date,
-          oldValues.expected_hours,
-          oldValues.start_time,
-          oldValues.end_time,
-          oldValues.break_minutes,
-          oldValues.actual_hours,
-          oldValues.manual_actual_override,
-          oldValues.status_id,
-          oldValues.period_id,
-          oldValues.is_override,
-          oldValues.notes
-        ]
-      );
-    }
-  } else if (lastLog.entity_name === 'regularizations') {
-    if (lastLog.action_type === 'INSERT' || lastLog.action_type === 'REGULARIZE') {
-      await db.run(`DELETE FROM regularizations WHERE id = ? AND user_id = ?`, [lastLog.entity_id, lastLog.user_id || userId]);
-    } else if (lastLog.action_type === 'DELETE' && oldValues) {
-      await db.run(
-        `INSERT INTO regularizations (id, user_id, reg_date, counter_type, operation_type, amount_hours, reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          oldValues.id,
-          lastLog.user_id || userId,
-          oldValues.reg_date,
-          oldValues.counter_type,
-          oldValues.operation_type || 'SETTLE',
-          oldValues.amount_hours,
-          oldValues.reason
-        ]
-      );
-    }
-  } else if (lastLog.entity_name === 'periods') {
-    if (lastLog.action_type === 'INSERT') {
-      const restoredDates: string[] = [];
-      // 1. Si des journées existaient avant la période, on restaure exactement leur état initial
-      if (oldValues && Array.isArray(oldValues.previousEntries)) {
-        for (const prev of oldValues.previousEntries) {
-          await db.run(
-            `UPDATE daily_entries SET
-              expected_hours = ?,
-              actual_hours = ?,
-              period_id = ?,
-              status_id = ?,
-              start_time = ?,
-              end_time = ?,
-              break_minutes = ?,
-              is_override = ?,
-              notes = ?,
-              updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? AND user_id = ?`,
-            [
-              prev.expected_hours,
-              prev.actual_hours,
-              prev.period_id || null,
-              prev.status_id || null,
-              prev.start_time || null,
-              prev.end_time || null,
-              prev.break_minutes || 0,
-              prev.is_override || 0,
-              prev.notes || null,
-              prev.id,
-              lastLog.user_id || userId
-            ]
-          );
-          restoredDates.push(prev.entry_date);
-        }
-      }
-
-      // 2. On supprime les journées générées de zéro par la période (qui n'existaient pas avant)
-      if (restoredDates.length > 0) {
-        const placeholders = restoredDates.map(() => '?').join(',');
-        await db.run(
-          `DELETE FROM daily_entries WHERE period_id = ? AND user_id = ? AND entry_date NOT IN (${placeholders})`,
-          [lastLog.entity_id, lastLog.user_id || userId, ...restoredDates]
-        );
-      } else {
-        await db.run(`DELETE FROM daily_entries WHERE period_id = ? AND user_id = ?`, [lastLog.entity_id, lastLog.user_id || userId]);
-      }
-
-      // 3. Suppression de la période elle-même
-      await db.run(`DELETE FROM periods WHERE id = ? AND user_id = ?`, [lastLog.entity_id, lastLog.user_id || userId]);
-    }
-  } else if (lastLog.entity_name === 'monthly_targets') {
-    if (oldValues && oldValues.target_hours !== undefined) {
-      await db.run(`UPDATE monthly_targets SET target_hours = ? WHERE id = ? AND user_id = ?`, [oldValues.target_hours, lastLog.entity_id, lastLog.user_id || userId]);
-    }
-  } else {
-    return {
-      success: false,
-      message: `L'action #${lastLog.id} sur l'entité ${lastLog.entity_name} ne peut pas être annulée automatiquement.`
-    };
-  }
-
-  // Enregistrer le restore dans les logs
-  await logAudit(
-    userId,
-    lastLog.entity_name,
-    lastLog.entity_id,
-    'RESTORE',
-    newValues,
-    oldValues,
-    `Annulation (Undo) de l'action #${lastLog.id}`
+  await db.run(
+    `INSERT INTO daily_entries (id, user_id, entry_date, ${ENTRY_COLUMNS.join(', ')}) VALUES (?, ?, ?, ${ENTRY_COLUMNS.map(() => '?').join(', ')})`,
+    [snapshot.id, userId, snapshot.entry_date, ...entryValues(snapshot)]
   );
+}
 
-  return { 
-    success: true, 
-    message: `Action #${lastLog.id} (${lastLog.action_type} sur ${lastLog.entity_name}) annulée avec succès.` 
-  };
+/**
+ * Annule la dernière action réversible non encore annulée.
+ * Toute l'opération (restauration + marquage + journal) est atomique. Si l'action
+ * ne peut pas être annulée, rien n'est modifié et la réponse le dit.
+ */
+export async function undoLastAction(userId: number): Promise<{ success: boolean; message: string }> {
+  try {
+    return await db.transaction(async () => {
+      const log = await db.get<any>(
+        `SELECT * FROM audit_logs
+         WHERE user_id = ? AND action_type IN ('INSERT', 'UPDATE', 'DELETE', 'REGULARIZE')
+           AND undone_at IS NULL AND reverts_log_id IS NULL
+         ORDER BY id DESC LIMIT 1`,
+        [userId]
+      );
+      if (!log) {
+        throw new UndoRefused('Aucune action récente à annuler.');
+      }
+
+      const oldValues = parseJson(log.old_values);
+      const newValues = parseJson(log.new_values);
+      let description = '';
+
+      switch (log.entity_name) {
+        case 'daily_entries': {
+          const date = oldValues?.entry_date || newValues?.entry_date;
+          if (date) await assertMonthsOpen(userId, [date]);
+          if (log.action_type === 'INSERT') {
+            await db.run(`DELETE FROM daily_entries WHERE id = ? AND user_id = ?`, [log.entity_id, userId]);
+          } else if (log.action_type === 'UPDATE' && oldValues) {
+            await restoreEntrySnapshot(userId, { ...oldValues, id: log.entity_id });
+          } else if (log.action_type === 'DELETE' && oldValues) {
+            await reinsertEntry(userId, oldValues);
+          } else {
+            throw new UndoRefused("Cette modification de journée ne contient pas assez d'informations pour être annulée.");
+          }
+          description = `journée du ${date ?? '?'}`;
+          break;
+        }
+
+        case 'regularizations': {
+          const date = oldValues?.reg_date || newValues?.reg_date;
+          if (date) await assertMonthsOpen(userId, [date]);
+          if (log.action_type === 'INSERT' || log.action_type === 'REGULARIZE') {
+            await db.run(`DELETE FROM regularizations WHERE id = ? AND user_id = ?`, [log.entity_id, userId]);
+          } else if (log.action_type === 'DELETE' && oldValues) {
+            await db.run(
+              `INSERT INTO regularizations (id, user_id, reg_date, counter_type, operation_type, amount_hours, reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [oldValues.id, userId, oldValues.reg_date, oldValues.counter_type, oldValues.operation_type || 'SETTLE', oldValues.amount_hours, oldValues.reason]
+            );
+          } else {
+            throw new UndoRefused("Cette régularisation ne peut pas être annulée automatiquement.");
+          }
+          description = `régularisation du ${date ?? '?'}`;
+          break;
+        }
+
+        case 'monthly_targets': {
+          if (log.action_type === 'INSERT') {
+            await db.run(`DELETE FROM monthly_targets WHERE id = ? AND user_id = ?`, [log.entity_id, userId]);
+          } else if (log.action_type === 'UPDATE' && oldValues) {
+            // Les anciens journaux ne contiennent parfois que certains champs : on ne restaure que ceux-là.
+            const fields = ['target_hours', 'notes', 'is_validated', 'validated_at'].filter((f) => f in oldValues);
+            if (fields.length === 0) {
+              throw new UndoRefused("Cette modification d'objectif ne contient pas assez d'informations pour être annulée.");
+            }
+            if ('is_validated' in oldValues && !('validated_at' in oldValues)) {
+              fields.push('validated_at');
+              oldValues.validated_at = oldValues.is_validated ? new Date().toISOString() : null;
+            }
+            await db.run(
+              `UPDATE monthly_targets SET ${fields.map((f) => `${f} = ?`).join(', ')}, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND user_id = ?`,
+              [...fields.map((f) => oldValues[f] ?? null), log.entity_id, userId]
+            );
+          } else {
+            throw new UndoRefused("Cette modification d'objectif ne peut pas être annulée automatiquement.");
+          }
+          description = `objectif de ${oldValues?.year_month || newValues?.year_month || '?'}`;
+          break;
+        }
+
+        case 'periods': {
+          if (log.action_type === 'INSERT') {
+            const previous: any[] = Array.isArray(oldValues?.previousEntries) ? oldValues.previousEntries : [];
+            const dates: string[] = Array.isArray(newValues?.applied_dates) ? newValues.applied_dates : previous.map((p) => p.entry_date);
+            await assertMonthsOpen(userId, dates);
+            for (const prev of previous) {
+              await restoreEntrySnapshot(userId, prev);
+            }
+            const keepIds = previous.map((p) => p.id);
+            const keepClause = keepIds.length ? ` AND id NOT IN (${keepIds.map(() => '?').join(',')})` : '';
+            await db.run(`DELETE FROM daily_entries WHERE period_id = ? AND user_id = ?${keepClause}`, [log.entity_id, userId, ...keepIds]);
+            await db.run(`DELETE FROM periods WHERE id = ? AND user_id = ?`, [log.entity_id, userId]);
+          } else if (log.action_type === 'DELETE' && oldValues) {
+            await db.run(
+              `INSERT INTO periods (id, user_id, label, start_date, end_date, status_id, color_hex, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [log.entity_id, userId, oldValues.label, oldValues.start_date, oldValues.end_date, oldValues.status_id ?? null, oldValues.color_hex ?? null, oldValues.notes ?? null]
+            );
+            const detached: number[] = Array.isArray(oldValues.detached_entry_ids) ? oldValues.detached_entry_ids : [];
+            for (const entryId of detached) {
+              await db.run(`UPDATE daily_entries SET period_id = ? WHERE id = ? AND user_id = ?`, [log.entity_id, entryId, userId]);
+            }
+          } else {
+            throw new UndoRefused('Cette modification de période ne peut pas être annulée automatiquement.');
+          }
+          description = `période « ${oldValues?.label || newValues?.label || '?'} »`;
+          break;
+        }
+
+        default:
+          throw new UndoRefused(`Les modifications de type « ${log.entity_name} » ne peuvent pas être annulées automatiquement.`);
+      }
+
+      await db.run(`UPDATE audit_logs SET undone_at = CURRENT_TIMESTAMP WHERE id = ?`, [log.id]);
+      await logAudit(userId, log.entity_name, log.entity_id, 'RESTORE', newValues, oldValues, `Annulation de l'action #${log.id}`, log.id);
+
+      return { success: true, message: `Dernière action annulée (${description}).` };
+    });
+  } catch (err) {
+    if (err instanceof UndoRefused) {
+      return { success: false, message: err.message };
+    }
+    // Un mois verrouillé ou une autre erreur métier remonte telle quelle.
+    throw err;
+  }
 }

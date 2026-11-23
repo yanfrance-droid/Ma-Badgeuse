@@ -1,132 +1,133 @@
-import { Router, Request, Response } from 'express';
-import { adminMiddleware } from '../middleware/adminAuth';
+import { Router } from 'express';
+import { asyncHandler, HttpError, requireUserId } from '../http';
+import { requireAuth } from '../middleware/auth';
 import {
-  register,
-  login,
-  getMe,
-  logout,
-  getSecurityQuestion,
-  resetPassword,
-  listAllUsers,
-  verifyAdminPin,
-  changeAdminPin,
-  deleteUserByAdmin
+  authenticate,
+  changePassword,
+  countUsers,
+  createSession,
+  createUser,
+  deleteSession,
+  isRegistrationOpen,
+  revokeSessions
 } from '../services/authService';
+import {
+  accountLimiter,
+  clearSessionCookie,
+  clientIp,
+  ipLimiter,
+  readSessionToken,
+  registrationLimiter,
+  setSessionCookie
+} from '../security';
+import { PASSWORD_MIN_LENGTH } from '../defaults';
 
 export const authRouter = Router();
 
-authRouter.post('/register', async (req: Request, res: Response) => {
-  try {
-    const result = await register(req.body);
-    res.json({ success: true, data: result });
-  } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
+/**
+ * GET /api/auth/setup-status
+ * Indique à l'écran de connexion s'il faut créer le premier compte
+ * et si l'inscription libre est ouverte.
+ */
+authRouter.get(
+  '/setup-status',
+  asyncHandler(async (_req, res) => {
+    const needsSetup = (await countUsers()) === 0;
+    res.json({
+      success: true,
+      data: {
+        needs_setup: needsSetup,
+        registration_open: needsSetup || (await isRegistrationOpen()),
+        password_min_length: PASSWORD_MIN_LENGTH
+      }
+    });
+  })
+);
 
-authRouter.post('/login', async (req: Request, res: Response) => {
-  try {
-    const result = await login(req.body);
-    res.json({ success: true, data: result });
-  } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
-
-authRouter.get('/me', async (req: Request, res: Response) => {
-  try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.startsWith('Bearer ')
-      ? authHeader.slice(7)
-      : (req.headers['x-auth-token'] as string);
-    if (!token) {
-      return res.json({ success: true, data: null });
+/**
+ * POST /api/auth/register
+ * Possible uniquement pour créer le premier compte (qui devient administrateur)
+ * ou quand l'administrateur a ouvert l'inscription.
+ */
+authRouter.post(
+  '/register',
+  asyncHandler(async (req, res) => {
+    const ip = clientIp(req);
+    registrationLimiter.check(ip);
+    const needsSetup = (await countUsers()) === 0;
+    if (!needsSetup && !(await isRegistrationOpen())) {
+      throw new HttpError(403, "L'inscription est fermée. Demandez à l'administrateur de créer votre compte.");
     }
-    const user = await getMe(token);
-    res.json({ success: true, data: user });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+    const user = await createUser({
+      username: req.body?.username,
+      displayName: req.body?.displayName,
+      password: req.body?.password
+    });
+    registrationLimiter.fail(ip);
+    const token = await createSession(user.id);
+    setSessionCookie(req, res, token);
+    res.status(201).json({ success: true, data: { user } });
+  })
+);
 
-authRouter.post('/logout', async (req: Request, res: Response) => {
-  try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.startsWith('Bearer ')
-      ? authHeader.slice(7)
-      : (req.headers['x-auth-token'] as string);
-    if (token) {
-      await logout(token);
+/** POST /api/auth/login */
+authRouter.post(
+  '/login',
+  asyncHandler(async (req, res) => {
+    const ip = clientIp(req);
+    const accountKey = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase().slice(0, 100) : '';
+    ipLimiter.check(ip);
+    accountLimiter.check(accountKey);
+    try {
+      const user = await authenticate(req.body?.username, req.body?.password);
+      accountLimiter.reset(accountKey);
+      const token = await createSession(user.id);
+      setSessionCookie(req, res, token);
+      res.json({ success: true, data: { user } });
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 401) {
+        ipLimiter.fail(ip);
+        accountLimiter.fail(accountKey);
+      }
+      throw err;
     }
-    res.json({ success: true, message: 'Déconnecté avec succès.' });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  })
+);
+
+/** GET /api/auth/me — renvoie l'utilisateur connecté, ou null. */
+authRouter.get('/me', (req, res) => {
+  res.json({ success: true, data: req.user || null });
 });
 
-authRouter.get('/security-question', async (req: Request, res: Response) => {
-  try {
-    const username = req.query.username as string;
-    if (!username) {
-      return res.status(400).json({ success: false, error: "Identifiant requis." });
+/** POST /api/auth/logout */
+authRouter.post(
+  '/logout',
+  asyncHandler(async (req, res) => {
+    await deleteSession(readSessionToken(req));
+    clearSessionCookie(req, res);
+    res.json({ success: true, message: 'Déconnecté.' });
+  })
+);
+
+/**
+ * POST /api/auth/change-password
+ * Change le mot de passe du compte connecté et déconnecte ses autres appareils.
+ */
+authRouter.post(
+  '/change-password',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const key = `change-password:${userId}`;
+    accountLimiter.check(key);
+    try {
+      await changePassword(userId, req.body?.currentPassword, req.body?.newPassword);
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 401) accountLimiter.fail(key);
+      throw err;
     }
-    const result = await getSecurityQuestion(username);
-    res.json({ success: true, data: result });
-  } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
-
-authRouter.post('/reset-password', async (req: Request, res: Response) => {
-  try {
-    const result = await resetPassword(req.body);
-    res.json({ success: true, data: result });
-  } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
-
-authRouter.get('/users', adminMiddleware, async (_req: Request, res: Response) => {
-  try {
-    const users = await listAllUsers();
-    res.json({ success: true, data: users });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-authRouter.post('/verify-admin-pin', async (req: Request, res: Response) => {
-  try {
-    const { pin } = req.body;
-    if (!pin) {
-      return res.status(400).json({ success: false, error: 'Code PIN requis.' });
-    }
-    const isValid = await verifyAdminPin(pin);
-    if (!isValid) {
-      return res.status(401).json({ success: false, error: 'Code PIN administrateur incorrect.' });
-    }
-    res.json({ success: true, message: 'Mode administrateur déverrouillé.' });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-authRouter.post('/change-admin-pin', async (req: Request, res: Response) => {
-  try {
-    const { oldPin, newPin } = req.body;
-    await changeAdminPin(oldPin, newPin);
-    res.json({ success: true, message: 'Code PIN administrateur modifié avec succès.' });
-  } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
-
-authRouter.delete('/users/:id', adminMiddleware, async (req: Request, res: Response) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    await deleteUserByAdmin(id);
-    res.json({ success: true, message: 'Compte utilisateur et données associés supprimés avec succès.' });
-  } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
+    accountLimiter.reset(key);
+    await revokeSessions(userId, readSessionToken(req));
+    res.json({ success: true, message: 'Mot de passe modifié. Vos autres appareils ont été déconnectés.' });
+  })
+);

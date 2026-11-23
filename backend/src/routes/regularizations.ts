@@ -1,146 +1,104 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
 import { db } from '../database';
 import { logAudit } from '../services/auditService';
+import { getGlobalCockpitSummary } from '../services/hoursService';
+import { assertMonthsOpen } from '../services/settingsService';
+import {
+  asyncHandler,
+  badRequest,
+  localToday,
+  notFound,
+  requireDate,
+  requireId,
+  requireNumber,
+  requireOneOf,
+  requireString,
+  requireUserId
+} from '../http';
+import { CounterType, OperationType } from '../types';
 
 export const regularizationsRouter = Router();
 
-/**
- * GET /api/regularizations
- * Liste toutes les régularisations enregistrées
- */
-regularizationsRouter.get('/', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const { counter_type } = req.query;
-    let query = `SELECT * FROM regularizations WHERE user_id = ?`;
-    const params: any[] = [userId];
+const COUNTER_TYPES: readonly CounterType[] = ['POSITIVE', 'NEGATIVE'];
+const OPERATION_TYPES: readonly OperationType[] = ['SETTLE', 'ADD'];
 
-    if (counter_type) {
-      query += ` AND counter_type = ?`;
-      params.push(counter_type);
+const formatHours = (h: number) => `${Math.round(h * 100) / 100} h`;
+
+/** GET /api/regularizations?counter_type=POSITIVE|NEGATIVE */
+regularizationsRouter.get(
+  '/',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const params: unknown[] = [userId];
+    let sql = `SELECT * FROM regularizations WHERE user_id = ?`;
+    if (req.query.counter_type !== undefined) {
+      sql += ` AND counter_type = ?`;
+      params.push(requireOneOf(req.query.counter_type, COUNTER_TYPES, 'Le compteur'));
     }
-
-    query += ` ORDER BY reg_date DESC, id DESC`;
-
-    const rows = await db.all<any>(query, params);
-    res.json({ success: true, data: rows });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+    sql += ` ORDER BY reg_date DESC, id DESC`;
+    res.json({ success: true, data: await db.all(sql, params) });
+  })
+);
 
 /**
  * POST /api/regularizations
- * Enregistre une régularisation / récupération d'heures
+ * SETTLE : heures payées / récupérées / rattrapées, déduites du compteur.
+ * ADD    : heures ajoutées au compteur (report d'un ancien solde...).
  */
-regularizationsRouter.post('/', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const { reg_date, counter_type, operation_type = 'SETTLE', amount_hours, reason } = req.body;
+regularizationsRouter.post(
+  '/',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const body = req.body || {};
+    const regDate = requireDate(body.reg_date, 'La date');
+    const counterType = requireOneOf(body.counter_type, COUNTER_TYPES, 'Le compteur');
+    const operationType = body.operation_type === undefined ? 'SETTLE' : requireOneOf(body.operation_type, OPERATION_TYPES, "Le type d'opération");
+    const amount = requireNumber(body.amount_hours, "Le nombre d'heures", 0.01, 1000);
+    const reason = requireString(body.reason, 'Le motif', 200);
 
-    if (!reg_date || !counter_type || !amount_hours || !reason) {
-      return res.status(400).json({
-        success: false,
-        error: "Tous les champs (reg_date, counter_type, amount_hours, reason) sont obligatoires."
-      });
-    }
+    const created = await db.transaction(async () => {
+      await assertMonthsOpen(userId, [regDate]);
 
-    if (!['POSITIVE', 'NEGATIVE'].includes(counter_type)) {
-      return res.status(400).json({
-        success: false,
-        error: "counter_type doit être soit 'POSITIVE', soit 'NEGATIVE'."
-      });
-    }
-
-    if (!['SETTLE', 'ADD'].includes(operation_type)) {
-      return res.status(400).json({
-        success: false,
-        error: "operation_type doit être soit 'SETTLE' (déduction/règlement), soit 'ADD' (ajout au compteur)."
-      });
-    }
-
-    const numericAmount = parseFloat(String(amount_hours));
-    if (isNaN(numericAmount) || numericAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Le montant d'heures doit être un nombre strictement positif supérieur à 0."
-      });
-    }
-
-    await db.exec('BEGIN TRANSACTION');
-    let newId = 0;
-    try {
-      const result = await db.run(`
-        INSERT INTO regularizations (user_id, reg_date, counter_type, operation_type, amount_hours, reason)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `, [userId, reg_date, counter_type, operation_type, Number(amount_hours), reason]);
-
-      newId = result.lastID;
-      const opLabel = operation_type === 'ADD' ? 'Ajout manuel de' : 'Régularisation / Déduction de';
-      await logAudit(
-        userId,
-        'regularizations',
-        newId,
-        'REGULARIZE',
-        null,
-        { reg_date, counter_type, operation_type, amount_hours, reason },
-        `${opLabel} ${amount_hours}h sur le compteur ${counter_type} : ${reason}`
-      );
-      await db.exec('COMMIT');
-    } catch (txErr) {
-      await db.exec('ROLLBACK');
-      throw txErr;
-    }
-
-    res.json({
-      success: true,
-      data: {
-        id: newId,
-        reg_date,
-        counter_type,
-        operation_type,
-        amount_hours: Number(amount_hours),
-        reason
+      // Une déduction ne peut pas dépasser le solde affiché, sinon elle basculerait
+      // silencieusement sur l'autre compteur.
+      if (operationType === 'SETTLE') {
+        if (regDate > localToday()) {
+          throw badRequest("Une déduction ne peut pas être datée dans le futur : le solde à cette date n'est pas encore connu.");
+        }
+        const summary = await getGlobalCockpitSummary(userId);
+        const available = counterType === 'POSITIVE' ? summary.total_positive_balance : summary.total_negative_balance;
+        if (amount > available + 0.001) {
+          throw badRequest(`Impossible de déduire ${formatHours(amount)} : le solde actuel n'est que de ${formatHours(available)}.`);
+        }
       }
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
-/**
- * DELETE /api/regularizations/:id
- * Supprime une régularisation
- */
-regularizationsRouter.delete('/:id', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const { id } = req.params;
-    const existing = await db.get<any>(`SELECT * FROM regularizations WHERE user_id = ? AND id = ?`, [userId, id]);
-    if (!existing) {
-      return res.status(404).json({ success: false, error: "Régularisation introuvable." });
-    }
-
-    await db.exec('BEGIN TRANSACTION');
-    try {
-      await db.run(`DELETE FROM regularizations WHERE user_id = ? AND id = ?`, [userId, id]);
-      await logAudit(
-        userId,
-        'regularizations',
-        Number(id),
-        'DELETE',
-        existing,
-        null,
-        `Suppression de la régularisation #${id}`
+      const result = await db.run(
+        `INSERT INTO regularizations (user_id, reg_date, counter_type, operation_type, amount_hours, reason) VALUES (?, ?, ?, ?, ?, ?)`,
+        [userId, regDate, counterType, operationType, amount, reason]
       );
-      await db.exec('COMMIT');
-    } catch (txErr) {
-      await db.exec('ROLLBACK');
-      throw txErr;
-    }
+      const data = { id: result.lastID, reg_date: regDate, counter_type: counterType, operation_type: operationType, amount_hours: amount, reason };
+      const opLabel = operationType === 'ADD' ? 'Ajout de' : 'Déduction de';
+      await logAudit(userId, 'regularizations', result.lastID, 'REGULARIZE', null, data, `${opLabel} ${formatHours(amount)} (${counterType}) : ${reason}`);
+      return data;
+    });
 
-    res.json({ success: true, message: "Régularisation supprimée." });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+    res.status(201).json({ success: true, data: created });
+  })
+);
+
+/** DELETE /api/regularizations/:id */
+regularizationsRouter.delete(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const id = requireId(req.params.id);
+    await db.transaction(async () => {
+      const existing = await db.get<any>(`SELECT * FROM regularizations WHERE user_id = ? AND id = ?`, [userId, id]);
+      if (!existing) throw notFound('Régularisation introuvable.');
+      await assertMonthsOpen(userId, [existing.reg_date]);
+      await db.run(`DELETE FROM regularizations WHERE user_id = ? AND id = ?`, [userId, id]);
+      await logAudit(userId, 'regularizations', id, 'DELETE', existing, null, `Suppression de la régularisation #${id}`);
+    });
+    res.json({ success: true, message: 'Régularisation supprimée.' });
+  })
+);

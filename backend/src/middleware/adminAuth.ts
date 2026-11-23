@@ -1,34 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
-import { verifyAdminPin } from '../services/authService';
+import { HttpError } from '../http';
 
 /**
- * Middleware vérifiant que la requête contient un code PIN administrateur valide.
- * Le code PIN peut être transmis via :
- * - Le header HTTP : 'x-admin-pin'
- * - Le corps de la requête : req.body.adminPin
- * - Le paramètre de requête : req.query.adminPin
+ * Réserve une route aux comptes administrateurs.
+ * Remplace l'ancien code PIN partagé : le droit est porté par le compte connecté.
+ * À placer après requireAuth.
  */
-export async function adminMiddleware(req: Request, res: Response, next: NextFunction) {
-  try {
-    const pin = (req.headers['x-admin-pin'] as string) || (req.body?.adminPin as string) || (req.query?.adminPin as string);
-
-    if (!pin) {
-      return res.status(403).json({
-        success: false,
-        error: "Accès refusé : Cette opération nécessite les droits d'administrateur (Code PIN manquant)."
-      });
-    }
-
-    const isValid = await verifyAdminPin(pin);
-    if (!isValid) {
-      return res.status(403).json({
-        success: false,
-        error: "Accès refusé : Code PIN administrateur incorrect."
-      });
-    }
-
-    next();
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message || 'Erreur vérification administrateur.' });
+export function requireAdmin(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.user?.is_admin) {
+    next(new HttpError(403, 'Accès refusé : cette opération est réservée aux administrateurs.'));
+    return;
   }
+  next();
 }

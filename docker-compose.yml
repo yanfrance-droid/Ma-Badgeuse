@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   ma-badgeuse:
     image: ma-badgeuse:latest
@@ -8,21 +6,26 @@ services:
       dockerfile: Dockerfile
     container_name: ma-badgeuse
     restart: unless-stopped
+    # BIND_ADDRESS=127.0.0.1 pour n'exposer l'application qu'au proxy HTTPS de la machine
+    # (recommandé). Par défaut, l'application est joignable depuis le réseau local.
     ports:
-      - "${PORT:-3000}:3000"
+      - "${BIND_ADDRESS:-0.0.0.0}:${PORT:-3000}:3000"
     environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - DB_PATH=/app/data/database.sqlite
-      - BACKUP_DIR=/app/backups
       - TZ=${APP_TIMEZONE:-Europe/Paris}
-      - APP_TIMEZONE=${APP_TIMEZONE:-Europe/Paris}
+      # true dès que l'application est servie en HTTPS (cookie de session « Secure »)
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
+      # 1 derrière un proxy HTTPS (Caddy, Traefik, Nginx) placé sur la même machine
+      - TRUST_PROXY=${TRUST_PROXY:-}
+      # Origines supplémentaires autorisées à modifier les données (séparées par des virgules)
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
     volumes:
       - ./data:/app/data
       - ./backups:/app/backups
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+    # Durcissement : système de fichiers en lecture seule hors données, aucun privilège.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

@@ -1,58 +1,62 @@
 # ==========================================
-# Multi-stage Dockerfile pour Suivi Heures Pro
+# Ma Badgeuse — image Docker multi-étapes
 # ==========================================
+# Node 24 (LTS) : Node 20 n'est plus maintenu depuis avril 2026.
 
-# Étape 1 : Build du Frontend PWA
-FROM node:20-alpine AS frontend-builder
+# Étape 1 : build du frontend
+FROM node:24-alpine AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# Étape 2 : Build du Backend Node.js TypeScript
-FROM node:20-alpine AS backend-builder
+# Étape 2 : build du backend TypeScript
+FROM node:24-alpine AS backend-builder
 WORKDIR /app/backend
-# Installer les dépendances système pour compiler sqlite3 si nécessaire
+# Outils de compilation pour sqlite3 si aucun binaire précompilé n'est disponible
 RUN apk add --no-cache python3 make g++
 COPY backend/package*.json ./
 RUN npm ci
 COPY backend/ ./
 RUN npm run build
 
-# Étape 3 : Image de Production légère
-FROM node:20-alpine AS runner
-WORKDIR /app
-
-# Installation de curl pour le healthcheck, tzdata pour le fuseau horaire et sqlite3
-RUN apk add --no-cache curl sqlite tzdata
-
-ENV NODE_ENV=production
-ENV PORT=3000
-ENV DB_PATH=/app/data/database.sqlite
-ENV BACKUP_DIR=/app/backups
-ENV TZ=Europe/Paris
-ENV APP_TIMEZONE=Europe/Paris
-
-# Création des dossiers de données et permissions
-RUN mkdir -p /app/data /app/backups /app/frontend/dist
-
-# Copie des dépendances de prod backend
+# Étape 3 : dépendances de production (compilées avec les mêmes outils)
+FROM node:24-alpine AS backend-deps
 WORKDIR /app/backend
+RUN apk add --no-cache python3 make g++
 COPY backend/package*.json ./
 RUN npm ci --omit=dev
 
-# Copie du code compilé backend
-COPY --from=backend-builder /app/backend/dist ./dist
+# Étape 4 : image de production
+FROM node:24-alpine AS runner
 
-# Copie des fichiers statiques frontend compilés
-COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
+# curl pour le contrôle de santé, sqlite pour les sauvegardes du script de gestion,
+# tzdata pour le fuseau horaire (variable TZ)
+RUN apk add --no-cache curl sqlite tzdata
 
+ENV NODE_ENV=production \
+    PORT=3000 \
+    DB_PATH=/app/data/database.sqlite \
+    BACKUP_DIR=/app/backups \
+    FRONTEND_DIST=/app/frontend/dist \
+    TZ=Europe/Paris
+
+WORKDIR /app/backend
+COPY --chown=node:node backend/package*.json ./
+COPY --from=backend-deps --chown=node:node /app/backend/node_modules ./node_modules
+COPY --from=backend-builder --chown=node:node /app/backend/dist ./dist
+COPY --from=frontend-builder --chown=node:node /app/frontend/dist /app/frontend/dist
+
+# Dossiers de données appartenant à l'utilisateur non privilégié « node » (uid 1000).
+# Les dossiers montés depuis l'hôte doivent aussi lui appartenir : voir le guide d'installation.
+RUN mkdir -p /app/data /app/backups/tmp && chown -R node:node /app/data /app/backups
+
+USER node
 WORKDIR /app
 EXPOSE 3000
 
-# Vérification de l'état de santé du conteneur
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:3000/api/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -fsS http://localhost:3000/api/health || exit 1
 
 CMD ["node", "backend/dist/index.js"]

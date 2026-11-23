@@ -1,26 +1,39 @@
 import { Request, Response, NextFunction } from 'express';
-import { getMe } from '../services/authService';
+import { getUserFromSession } from '../services/authService';
+import { readSessionToken } from '../security';
+import { HttpError } from '../http';
 
-export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
+/** Charge l'utilisateur de la session si elle existe, sans rien imposer. */
+export async function loadSession(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.startsWith('Bearer ')
-      ? authHeader.slice(7)
-      : (req.headers['x-auth-token'] as string);
-
-    if (!token) {
-      return res.status(401).json({ success: false, error: 'Non authentifié. Veuillez vous connecter.' });
+    const user = await getUserFromSession(readSessionToken(req));
+    if (user) {
+      req.user = user;
+      req.userId = user.id;
     }
-
-    const user = await getMe(token);
-    if (!user) {
-      return res.status(401).json({ success: false, error: 'Session expirée ou invalide. Veuillez vous reconnecter.' });
-    }
-
-    req.userId = user.id;
-    req.user = user;
     next();
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message || 'Erreur authentification.' });
+  } catch (err) {
+    next(err);
   }
+}
+
+/** Exige une session valide. */
+export function requireAuth(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.user) {
+    next(new HttpError(401, 'Session expirée ou absente. Veuillez vous connecter.', 'UNAUTHENTICATED'));
+    return;
+  }
+  next();
+}
+
+/**
+ * Bloque l'accès aux données tant qu'un changement de mot de passe est exigé
+ * (mot de passe temporaire donné par l'administrateur, ou mot de passe trop court).
+ */
+export function requirePasswordUpToDate(req: Request, _res: Response, next: NextFunction): void {
+  if (req.user?.must_change_password) {
+    next(new HttpError(403, 'Vous devez changer votre mot de passe avant de continuer.', 'PASSWORD_CHANGE_REQUIRED'));
+    return;
+  }
+  next();
 }

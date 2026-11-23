@@ -1,5 +1,7 @@
 import { db } from '../database';
-import { AnnualCockpitSummary, AnnualMonthItem, DailyEntry, GlobalCockpitSummary, MonthSummary } from '../types';
+import { localToday } from '../http';
+import { getUserNumberSetting } from './settingsService';
+import { AnnualCockpitSummary, AnnualMonthItem, GlobalCockpitSummary, MonthSummary } from '../types';
 
 /**
  * Convertit 'HH:mm' en minutes depuis minuit
@@ -54,52 +56,46 @@ export function computeDailyDelta(
 
   const expected = Number(entry.expected_hours || 0);
   const actual = Number(entry.actual_hours || 0);
-  const rule = entry.accounting_rule;
 
-  // 1. Règle NEUTRAL (ex: Jour de repos, jour à 0h, congé sans dette)
-  if (rule === 'NEUTRAL') {
-    const delta = actual > 0 ? actual : 0;
-    return { delta, positive: delta, negative: 0 };
+  switch (entry.accounting_rule) {
+    // Jour neutre (jour à 0 h) et vacances scolaires : aucune heure n'est due,
+    // les heures éventuellement faites comptent entièrement en plus.
+    case 'NEUTRAL':
+    case 'VARIABLE': {
+      const delta = actual > 0 ? Math.round(actual * 100) / 100 : 0;
+      return { delta, positive: delta, negative: 0 };
+    }
+    // Absence avec maintien (congé payé, maladie, férié...) : les heures prévues
+    // sont réputées faites, aucune dette ne peut apparaître.
+    case 'MAINTAINED': {
+      const delta = Math.round((Math.max(actual, expected) - expected) * 100) / 100;
+      return { delta, positive: delta > 0 ? delta : 0, negative: 0 };
+    }
+    // DEDUCTED (absence à rattraper), CUSTOM et journée travaillée sans statut :
+    // écart réel entre heures faites et heures prévues.
+    default: {
+      const delta = Math.round((actual - expected) * 100) / 100;
+      return { delta, positive: delta > 0 ? delta : 0, negative: delta < 0 ? -delta : 0 };
+    }
   }
+}
 
-  // 2. Règle MAINTAINED (ex: Congé payé, Arrêt maladie avec maintien de salaire)
-  // Les heures attendues sont réputées faites : aucun passif (delta négatif = 0)
-  if (rule === 'MAINTAINED') {
-    const effectiveActual = Math.max(actual, expected);
-    const delta = Math.round((effectiveActual - expected) * 100) / 100;
-    return { delta, positive: delta > 0 ? delta : 0, negative: 0 };
-  }
-
-  // 3. Règle DEDUCTED (ex: Absence non rémunérée / à rattraper)
-  if (rule === 'DEDUCTED') {
-    const delta = Math.round((actual - expected) * 100) / 100;
-    return { delta, positive: delta > 0 ? delta : 0, negative: delta < 0 ? Math.abs(delta) : 0 };
-  }
-
-  // Écart réel direct sans distorsion
-  const delta = Math.round((actual - expected) * 100) / 100;
-  const positive = delta > 0 ? delta : 0;
-  const negative = delta < 0 ? Math.abs(delta) : 0;
-
-  return { delta, positive, negative };
+/** Une journée future sans heures ni statut ne crée pas de dette anticipée. */
+export function isUnworkedFutureEntry(row: { entry_date?: string; actual_hours?: number; status_id?: number | null }, todayStr: string): boolean {
+  return Boolean(row.entry_date && row.entry_date > todayStr && Number(row.actual_hours || 0) === 0 && !row.status_id);
 }
 
 /**
- * Calcule le cockpit global :
- * - Solde Positif total (Persistance infinie)
- * - Solde Négatif total (Persistance infinie)
- * - Aucune fusion / Zéro compensation automatique
- * - Bilan du mois en cours
- * - Décompte des jours (au-dessus / en-dessous / neutres)
+ * Calcule le tableau de bord :
+ * - cumul brut des heures en plus et des heures dues, depuis toujours ;
+ * - régularisations manuelles appliquées à chaque compteur ;
+ * - compensation : les heures en plus effacent d'abord les heures dues, seul le
+ *   reste est affiché (« On me doit » ou « Je dois ») ;
+ * - bilan du mois demandé et décompte des journées.
  */
-export async function getGlobalCockpitSummary(userId: number = 1, targetYearMonth?: string): Promise<GlobalCockpitSummary> {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  const todayStr = `${y}-${m}-${d}`;
-  const defaultYm = `${y}-${m}`;
-  const currentYm = targetYearMonth || defaultYm;
+export async function getGlobalCockpitSummary(userId: number, targetYearMonth?: string): Promise<GlobalCockpitSummary> {
+  const todayStr = localToday();
+  const currentYm = targetYearMonth || todayStr.slice(0, 7);
 
   // 1. Récupération de tous les pointages de l'utilisateur avec les règles comptables associées
   const entries = await db.all<any>(`
@@ -157,9 +153,7 @@ export async function getGlobalCockpitSummary(userId: number = 1, targetYearMont
   let totalMonthDays = 0;
 
   for (const row of entries) {
-    const isFuture = Boolean(row.entry_date && row.entry_date > todayStr);
-    const isUnworkedFuture = isFuture && Number(row.actual_hours || 0) === 0 && !row.status_id;
-
+    const isUnworkedFuture = isUnworkedFutureEntry(row, todayStr);
     const { delta, positive, negative } = computeDailyDelta(row, isUnworkedFuture);
 
     // Les journées futures non encore travaillées ne gonflent pas la dette
@@ -190,33 +184,19 @@ export async function getGlobalCockpitSummary(userId: number = 1, targetYearMont
     WHERE user_id = ? AND year_month = ?
   `, [userId, currentYm]);
 
-  let monthlyTargetHours = 120;
-  if (targetRow && targetRow.target_hours !== undefined) {
-    monthlyTargetHours = Number(targetRow.target_hours);
-  } else {
-    // Consulter le paramètre de l'utilisateur ou par défaut
-    const userSetting = await db.get<any>(`
-      SELECT setting_value FROM user_settings WHERE user_id = ? AND setting_key = 'default_monthly_target'
-    `, [userId]);
-    if (userSetting && userSetting.setting_value) {
-      monthlyTargetHours = parseFloat(userSetting.setting_value) || 120;
-    } else {
-      const defaultSetting = await db.get<any>(`
-        SELECT setting_value FROM app_settings WHERE setting_key = 'default_monthly_target'
-      `);
-      if (defaultSetting && defaultSetting.setting_value) {
-        monthlyTargetHours = parseFloat(defaultSetting.setting_value) || 120;
-      }
-    }
-  }
+  const monthlyTargetHours =
+    targetRow && targetRow.target_hours !== undefined && targetRow.target_hours !== null
+      ? Number(targetRow.target_hours)
+      : await getUserNumberSetting(userId, 'default_monthly_target');
 
-  // Soldes bruts cumulés après régularisations manuelles (ajouts ou déductions)
+  // Soldes bruts cumulés après régularisations manuelles (ajouts ou déductions).
+  // Une régularisation ne peut plus dépasser le solde (contrôle à l'enregistrement) ;
+  // le plancher à 0 ne sert qu'aux données saisies avant ce contrôle.
   const grossPositive = Math.max(0, Math.round((sumPositiveAllTime + netRegPositive) * 100) / 100);
   const grossNegative = Math.max(0, Math.round((sumNegativeAllTime + netRegNegative) * 100) / 100);
 
-  // LOGIQUE DE RATTRAPAGE DIRECT & COMPENSATION RECHERCHÉE PAR L'UTILISATEUR :
-  // Les heures supplémentaires effectuées compensent directement les heures dues à l'employeur.
-  // Exemple : Si l'agent doit 4h et fait 6h sup, la dette s'éteint (0h due) et le solde sup passe à +2h.
+  // Compensation : les heures en plus effacent d'abord les heures dues.
+  // Exemple : 4 h dues et 6 h en plus → 0 h due et +2 h à récupérer.
   let totalPositiveBalance = 0;
   let totalNegativeBalance = 0;
 
@@ -233,7 +213,8 @@ export async function getGlobalCockpitSummary(userId: number = 1, targetYearMont
     target_hours: Math.round(monthlyTargetHours * 100) / 100,
     expected_hours: Math.round(monthExpected * 100) / 100,
     actual_hours: Math.round(monthActual * 100) / 100,
-    delta_hours: Math.round((monthActual - monthExpected) * 100) / 100,
+    // Solde selon les règles du jour (une absence neutre ne compte pas), et non « fait − prévu ».
+    delta_hours: Math.round((monthPositiveDelta - monthNegativeDelta) * 100) / 100,
     positive_delta: Math.round(monthPositiveDelta * 100) / 100,
     negative_delta: Math.round(monthNegativeDelta * 100) / 100,
     is_validated: Boolean(targetRow?.is_validated),
@@ -285,47 +266,14 @@ const FRENCH_MONTH_NAMES: Record<string, string> = {
 /**
  * Calcule le bilan annuel scolaire complet (Septembre à Août) avec décompte du quota d'heures
  */
-export async function getAnnualCockpitSummary(userId: number = 1, startYear: number): Promise<AnnualCockpitSummary> {
+export async function getAnnualCockpitSummary(userId: number, startYear: number): Promise<AnnualCockpitSummary> {
   const endYear = startYear + 1;
   const schoolYearLabel = `${startYear} - ${endYear}`;
   const startMonth = `${startYear}-09`;
   const endMonth = `${endYear}-08`;
 
-  // 1. Récupération du quota d'heures annuelles pour cet utilisateur
-  let annualContractHours = 800;
-  const userSettingRow = await db.get<any>(`
-    SELECT setting_value FROM user_settings WHERE user_id = ? AND setting_key = 'annual_target_hours'
-  `, [userId]);
-  if (userSettingRow && userSettingRow.setting_value) {
-    const val = parseFloat(userSettingRow.setting_value);
-    if (!isNaN(val) && val > 0) annualContractHours = val;
-  } else {
-    const settingRow = await db.get<any>(`
-      SELECT setting_value FROM app_settings WHERE setting_key = 'annual_target_hours'
-    `);
-    if (settingRow && settingRow.setting_value) {
-      const val = parseFloat(settingRow.setting_value);
-      if (!isNaN(val) && val > 0) annualContractHours = val;
-    }
-  }
-
-  // Objectif mensuel par défaut
-  let defaultMonthlyTarget = 120;
-  const userDefMonth = await db.get<any>(`
-    SELECT setting_value FROM user_settings WHERE user_id = ? AND setting_key = 'default_monthly_target'
-  `, [userId]);
-  if (userDefMonth && userDefMonth.setting_value) {
-    const val = parseFloat(userDefMonth.setting_value);
-    if (!isNaN(val) && val > 0) defaultMonthlyTarget = val;
-  } else {
-    const defMonthRow = await db.get<any>(`
-      SELECT setting_value FROM app_settings WHERE setting_key = 'default_monthly_target'
-    `);
-    if (defMonthRow && defMonthRow.setting_value) {
-      const val = parseFloat(defMonthRow.setting_value);
-      if (!isNaN(val) && val > 0) defaultMonthlyTarget = val;
-    }
-  }
+  const annualContractHours = await getUserNumberSetting(userId, 'annual_target_hours');
+  const defaultMonthlyTarget = await getUserNumberSetting(userId, 'default_monthly_target');
 
   // 2. Générer la liste des 12 mois de septembre à août
   const monthKeys: string[] = [];
@@ -362,8 +310,7 @@ export async function getAnnualCockpitSummary(userId: number = 1, startYear: num
     });
   }
 
-  const now = new Date();
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const todayStr = localToday();
 
   // 5. Construire le bilan par mois
   const monthItems: AnnualMonthItem[] = [];
@@ -392,10 +339,7 @@ export async function getAnnualCockpitSummary(userId: number = 1, startYear: num
     const monthEntries = entries.filter((e) => e.entry_date && e.entry_date.startsWith(ym));
 
     for (const row of monthEntries) {
-      const isFuture = Boolean(row.entry_date && row.entry_date > todayStr);
-      const isUnworkedFuture = isFuture && Number(row.actual_hours || 0) === 0 && !row.status_id;
-
-      const { delta, positive, negative } = computeDailyDelta(row, isUnworkedFuture);
+      const { positive, negative } = computeDailyDelta(row, isUnworkedFutureEntry(row, todayStr));
 
       mExpected += Number(row.expected_hours || 0);
       mActual += Number(row.actual_hours || 0);
@@ -410,7 +354,7 @@ export async function getAnnualCockpitSummary(userId: number = 1, startYear: num
       }
     }
 
-    const mDelta = Math.round((mActual - mExpected) * 100) / 100;
+    const mDelta = Math.round((mPos - mNeg) * 100) / 100;
     const roundedActual = Math.round(mActual * 100) / 100;
     const roundedExpected = Math.round(mExpected * 100) / 100;
     const roundedPos = Math.round(mPos * 100) / 100;

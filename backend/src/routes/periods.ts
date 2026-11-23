@@ -1,172 +1,186 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
 import { db } from '../database';
 import { logAudit } from '../services/auditService';
+import { assertMonthsOpen } from '../services/settingsService';
+import {
+  asyncHandler,
+  badRequest,
+  conflict,
+  isValidColor,
+  notFound,
+  optionalString,
+  requireDate,
+  requireId,
+  requireInteger,
+  requireNumber,
+  requireOneOf,
+  requireString,
+  requireUserId
+} from '../http';
+import { ABSENCE_IMPACTS } from '../types';
 
 export const periodsRouter = Router();
 
-/**
- * GET /api/periods
- * Liste toutes les périodes définies
- */
-periodsRouter.get('/', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const rows = await db.all<any>(`
-      SELECT 
-        p.*,
-        s.label as status_label,
-        s.color_hex as status_color
-      FROM periods p
-      LEFT JOIN status_catalog s ON p.status_id = s.id
-      WHERE p.user_id = ?
-      ORDER BY p.start_date DESC
-    `, [userId]);
-    res.json({ success: true, data: rows });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+const MAX_PERIOD_DAYS = 366;
+
+/** Liste des dates entre deux bornes incluses, en excluant éventuellement les week-ends. */
+function listDates(startDate: string, endDate: string, skipWeekends: boolean): string[] {
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const [ey, em, ed] = endDate.split('-').map(Number);
+  const cur = new Date(sy, sm - 1, sd);
+  const end = new Date(ey, em - 1, ed);
+  const dates: string[] = [];
+  while (cur <= end) {
+    const day = cur.getDay();
+    if (!(skipWeekends && (day === 0 || day === 6))) {
+      dates.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}-${String(cur.getDate()).padStart(2, '0')}`);
+    }
+    cur.setDate(cur.getDate() + 1);
   }
-});
+  return dates;
+}
+
+function parseRange(body: any): { startDate: string; endDate: string } {
+  const startDate = requireDate(body?.start_date, 'La date de début');
+  const endDate = requireDate(body?.end_date, 'La date de fin');
+  if (startDate > endDate) {
+    throw badRequest('La date de début ne peut pas être postérieure à la date de fin.');
+  }
+  const days = Math.round((Date.parse(endDate) - Date.parse(startDate)) / 86400000) + 1;
+  if (days > MAX_PERIOD_DAYS) {
+    throw badRequest(`Une période ne peut pas dépasser ${MAX_PERIOD_DAYS} jours.`);
+  }
+  return { startDate, endDate };
+}
+
+/** GET /api/periods */
+periodsRouter.get(
+  '/',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const rows = await db.all(
+      `SELECT p.*, s.label AS status_label, s.color_hex AS status_color,
+              (SELECT COUNT(*) FROM daily_entries d WHERE d.period_id = p.id AND d.user_id = p.user_id) AS days_count
+       FROM periods p
+       LEFT JOIN status_catalog s ON p.status_id = s.id
+       WHERE p.user_id = ?
+       ORDER BY p.start_date DESC`,
+      [userId]
+    );
+    res.json({ success: true, data: rows });
+  })
+);
 
 /**
  * POST /api/periods/check-conflicts
- * Garde-fou anti-écrasement : liste les journées ayant été personnalisées manuellement dans l'intervalle
+ * Journées saisies individuellement dans l'intervalle (elles seront préservées)
+ * et périodes existantes qui chevauchent l'intervalle (refusées à la création).
  */
-periodsRouter.post('/check-conflicts', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const { start_date, end_date } = req.body;
-    if (!start_date || !end_date) {
-      return res.status(400).json({ success: false, error: "start_date et end_date sont requis." });
-    }
-
-    const overriddenDays = await db.all<any>(`
-      SELECT 
-        d.entry_date, 
-        d.expected_hours, 
-        d.actual_hours,
-        s.label as status_label
-      FROM daily_entries d
-      LEFT JOIN status_catalog s ON d.status_id = s.id
-      WHERE d.user_id = ? AND d.entry_date >= ? AND d.entry_date <= ? AND d.is_override = 1
-      ORDER BY d.entry_date ASC
-    `, [userId, start_date, end_date]);
-
+periodsRouter.post(
+  '/check-conflicts',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const { startDate, endDate } = parseRange(req.body);
+    const overriddenDays = await db.all(
+      `SELECT d.entry_date, d.expected_hours, d.actual_hours, s.label AS status_label
+       FROM daily_entries d
+       LEFT JOIN status_catalog s ON d.status_id = s.id
+       WHERE d.user_id = ? AND d.entry_date >= ? AND d.entry_date <= ? AND d.is_override = 1
+       ORDER BY d.entry_date ASC`,
+      [userId, startDate, endDate]
+    );
+    const overlappingPeriods = await db.all(
+      `SELECT id, label, start_date, end_date FROM periods
+       WHERE user_id = ? AND start_date <= ? AND end_date >= ? ORDER BY start_date`,
+      [userId, endDate, startDate]
+    );
     res.json({
       success: true,
-      has_conflicts: overriddenDays.length > 0,
-      conflicted_days: overriddenDays
+      has_conflicts: overriddenDays.length > 0 || overlappingPeriods.length > 0,
+      conflicted_days: overriddenDays,
+      overlapping_periods: overlappingPeriods
     });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+  })
+);
 
 /**
  * POST /api/periods
- * Crée une période et propage le statut sur les jours de l'intervalle
- * Paramètre 'preserve_overrides': true par défaut pour protéger les jours modifiés
+ * Crée une période et l'applique aux jours de l'intervalle. Les journées saisies
+ * individuellement sont préservées (preserve_overrides, activé par défaut).
  */
-periodsRouter.post('/', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const {
-      label,
-      start_date,
-      end_date,
-      status_id,
-      color_hex,
-      notes,
-      preserve_overrides = true,
-      skip_weekends = true,
-      expected_hours_per_day = 0,
-      actual_hours_per_day = 0
-    } = req.body;
+periodsRouter.post(
+  '/',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const body = req.body || {};
+    const label = requireString(body.label, 'Le libellé', 100);
+    const { startDate, endDate } = parseRange(body);
+    const notes = optionalString(body.notes, 'La note', 500);
+    const preserveOverrides = body.preserve_overrides !== false;
+    const skipWeekends = body.skip_weekends !== false;
+    const expectedPerDay = body.expected_hours_per_day === undefined ? 0 : requireNumber(body.expected_hours_per_day, 'Les heures prévues par jour', 0, 24);
+    const actualPerDay = body.actual_hours_per_day === undefined ? 0 : requireNumber(body.actual_hours_per_day, 'Les heures comptées par jour', 0, 24);
+    const absenceReason = optionalString(body.absence_reason, "Le motif d'absence", 40);
+    const absenceImpact = body.absence_impact ? requireOneOf(body.absence_impact, ABSENCE_IMPACTS, "L'impact de l'absence") : null;
 
-    if (!label || !start_date || !end_date) {
-      return res.status(400).json({ success: false, error: "Le libellé, la date de début et la date de fin sont requis." });
+    let colorHex: string | null = null;
+    if (body.color_hex !== undefined && body.color_hex !== null && body.color_hex !== '') {
+      if (!isValidColor(body.color_hex)) throw badRequest('La couleur doit être au format #RRGGBB.');
+      colorHex = body.color_hex;
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(start_date) || !/^\d{4}-\d{2}-\d{2}$/.test(end_date)) {
-      return res.status(400).json({ success: false, error: "Les dates doivent être au format YYYY-MM-DD." });
-    }
-    if (start_date > end_date) {
-      return res.status(400).json({ success: false, error: "La date de début ne peut pas être postérieure à la date de fin." });
-    }
-    const diffDays = Math.round((new Date(end_date).getTime() - new Date(start_date).getTime()) / (1000 * 60 * 60 * 24));
-    if (diffDays > 366) {
-      return res.status(400).json({ success: false, error: "La durée d'une période ne peut pas dépasser 366 jours." });
-    }
-
-    // 1. Générer la liste des jours entre start_date et end_date (en excluant éventuellement les samedis et dimanches)
-    const [sy, sm, sd] = start_date.split('-').map(Number);
-    const [ey, em, ed] = end_date.split('-').map(Number);
-    const start = new Date(sy, sm - 1, sd);
-    const end = new Date(ey, em - 1, ed);
-    const dateList: string[] = [];
-    const cur = new Date(start);
-
-    while (cur <= end) {
-      const dayOfWeek = cur.getDay(); // 0 = Dimanche, 6 = Samedi
-      if (!(skip_weekends && (dayOfWeek === 0 || dayOfWeek === 6))) {
-        const y = cur.getFullYear();
-        const m = String(cur.getMonth() + 1).padStart(2, '0');
-        const d = String(cur.getDate()).padStart(2, '0');
-        dateList.push(`${y}-${m}-${d}`);
+    let statusId: number | null = null;
+    if (body.status_id !== undefined && body.status_id !== null && body.status_id !== '') {
+      statusId = requireInteger(body.status_id, 'Le statut', 1, Number.MAX_SAFE_INTEGER);
+      if (!(await db.get(`SELECT id FROM status_catalog WHERE id = ?`, [statusId]))) {
+        throw badRequest("Le statut indiqué n'existe pas.");
       }
-      cur.setDate(cur.getDate() + 1);
     }
 
-    const expH = Number(expected_hours_per_day || 0);
-    const actH = Number(actual_hours_per_day || 0);
+    const dates = listDates(startDate, endDate, skipWeekends);
+    if (dates.length === 0) {
+      throw badRequest('Aucun jour ouvré dans cet intervalle.');
+    }
     const dayNotes = notes || label;
-    let daysModifiedCount = 0;
-    let periodId = 0;
 
-    // 2. Transaction atomique pour garantir la cohérence
-    await db.exec('BEGIN TRANSACTION');
-    try {
-      // Insertion de la période
-      const periodResult = await db.run(`
-        INSERT INTO periods (user_id, label, start_date, end_date, status_id, color_hex, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `, [userId, label, start_date, end_date, status_id || null, color_hex || null, notes || null]);
+    const result = await db.transaction(async () => {
+      await assertMonthsOpen(userId, dates);
+      const overlapping = await db.get<any>(
+        `SELECT label, start_date, end_date FROM periods WHERE user_id = ? AND start_date <= ? AND end_date >= ? LIMIT 1`,
+        [userId, endDate, startDate]
+      );
+      if (overlapping) {
+        throw conflict(
+          `Cette période chevauche « ${overlapping.label} » (${overlapping.start_date} → ${overlapping.end_date}). Supprimez-la d'abord ou choisissez d'autres dates.`
+        );
+      }
 
-      periodId = periodResult.lastID;
+      const inserted = await db.run(
+        `INSERT INTO periods (user_id, label, start_date, end_date, status_id, color_hex, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [userId, label, startDate, endDate, statusId, colorHex, notes]
+      );
+      const periodId = inserted.lastID;
+      const previousEntries: any[] = [];
+      const appliedDates: string[] = [];
 
-      // Sauvegarde de l'état préalable des journées existantes pour annulation (Undo) 100% sécurisée
-      const previousEntriesSnapshot: any[] = [];
-
-      // Appliquer la période sur chaque jour
-      for (const dStr of dateList) {
-        const existing = await db.get<any>(`SELECT * FROM daily_entries WHERE user_id = ? AND entry_date = ?`, [userId, dStr]);
-
+      for (const day of dates) {
+        const existing = await db.get<any>(`SELECT * FROM daily_entries WHERE user_id = ? AND entry_date = ?`, [userId, day]);
         if (existing) {
-          // Si preserve_overrides est activé et que le jour a été personnalisé individuellement, on ne l'écrase pas
-          if (preserve_overrides && existing.is_override === 1) {
-            continue;
-          }
-
-          // Enregistrer la copie exacte de la journée avant modification
-          previousEntriesSnapshot.push({ ...existing });
-
-          await db.run(`
-            UPDATE daily_entries SET
-              expected_hours = ?,
-              actual_hours = ?,
-              period_id = ?,
-              status_id = COALESCE(?, status_id),
-              notes = COALESCE(notes, ?),
-              updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ? AND id = ?
-          `, [expH, actH, periodId, status_id || null, dayNotes, userId, existing.id]);
-          daysModifiedCount++;
+          if (preserveOverrides && existing.is_override === 1) continue;
+          previousEntries.push({ ...existing });
+          await db.run(
+            `UPDATE daily_entries SET expected_hours = ?, actual_hours = ?, period_id = ?, status_id = COALESCE(?, status_id),
+               absence_reason = ?, absence_impact = ?, notes = COALESCE(notes, ?), updated_at = CURRENT_TIMESTAMP
+             WHERE user_id = ? AND id = ?`,
+            [expectedPerDay, actualPerDay, periodId, statusId, absenceReason, absenceImpact, dayNotes, userId, existing.id]
+          );
         } else {
-          // is_override = 0 : journée générée par lot via la période (pas une saisie manuelle individuelle)
-          await db.run(`
-            INSERT INTO daily_entries (user_id, entry_date, expected_hours, actual_hours, status_id, period_id, is_override, notes)
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?)
-          `, [userId, dStr, expH, actH, status_id || null, periodId, dayNotes]);
-          daysModifiedCount++;
+          await db.run(
+            `INSERT INTO daily_entries (user_id, entry_date, expected_hours, actual_hours, status_id, period_id, is_override, absence_reason, absence_impact, notes)
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+            [userId, day, expectedPerDay, actualPerDay, statusId, periodId, absenceReason, absenceImpact, dayNotes]
+          );
         }
+        appliedDates.push(day);
       }
 
       await logAudit(
@@ -174,52 +188,53 @@ periodsRouter.post('/', async (req: Request, res: Response) => {
         'periods',
         periodId,
         'INSERT',
-        { previousEntries: previousEntriesSnapshot },
-        req.body,
-        `Création période ${label} (${daysModifiedCount} jours appliqués)`
+        { previousEntries },
+        { label, start_date: startDate, end_date: endDate, status_id: statusId, applied_dates: appliedDates },
+        `Création de la période « ${label} » (${appliedDates.length} jour(s))`
       );
-      await db.exec('COMMIT');
-    } catch (txErr) {
-      await db.exec('ROLLBACK');
-      throw txErr;
-    }
+      return { periodId, appliedCount: appliedDates.length };
+    });
 
-    res.json({
+    res.status(201).json({
       success: true,
       data: {
-        id: periodId,
+        id: result.periodId,
         label,
-        start_date,
-        end_date,
-        days_covered: dateList.length,
-        days_modified: daysModifiedCount
+        start_date: startDate,
+        end_date: endDate,
+        days_covered: dates.length,
+        days_modified: result.appliedCount
       }
     });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+  })
+);
 
 /**
  * DELETE /api/periods/:id
- * Supprime une période (détache les entrées journalières sans les supprimer)
+ * Supprime la période. Les journées qu'elle avait créées sont conservées
+ * (seul leur lien vers la période est retiré) ; l'action est annulable.
  */
-periodsRouter.delete('/:id', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const { id } = req.params;
-    const existing = await db.get<any>(`SELECT * FROM periods WHERE user_id = ? AND id = ?`, [userId, id]);
-    if (!existing) {
-      return res.status(404).json({ success: false, error: "Période introuvable." });
-    }
-
-    await db.run(`UPDATE daily_entries SET period_id = NULL WHERE user_id = ? AND period_id = ?`, [userId, id]);
-    await db.run(`DELETE FROM periods WHERE user_id = ? AND id = ?`, [userId, id]);
-
-    await logAudit(userId, 'periods', Number(id), 'DELETE', existing, null, `Suppression de la période ${existing.label}`);
-
-    res.json({ success: true, message: `Période supprimée.` });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+periodsRouter.delete(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const id = requireId(req.params.id);
+    await db.transaction(async () => {
+      const existing = await db.get<any>(`SELECT * FROM periods WHERE user_id = ? AND id = ?`, [userId, id]);
+      if (!existing) throw notFound('Période introuvable.');
+      const detached = await db.all<{ id: number }>(`SELECT id FROM daily_entries WHERE user_id = ? AND period_id = ?`, [userId, id]);
+      await db.run(`UPDATE daily_entries SET period_id = NULL WHERE user_id = ? AND period_id = ?`, [userId, id]);
+      await db.run(`DELETE FROM periods WHERE user_id = ? AND id = ?`, [userId, id]);
+      await logAudit(
+        userId,
+        'periods',
+        id,
+        'DELETE',
+        { ...existing, detached_entry_ids: detached.map((d) => d.id) },
+        null,
+        `Suppression de la période « ${existing.label} »`
+      );
+    });
+    res.json({ success: true, message: 'Période supprimée. Les journées concernées restent enregistrées.' });
+  })
+);

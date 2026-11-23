@@ -1,79 +1,85 @@
-import { CockpitSummary, DailyEntry, PeriodItem, RegularizationItem, StatusItem, AuditLogItem, AnnualCockpitSummary, User } from './types';
+import {
+  AbsenceImpact,
+  AnnualCockpitSummary,
+  AuditLogItem,
+  BackupItem,
+  CockpitSummary,
+  DailyEntry,
+  DatabaseStatus,
+  PeriodItem,
+  RegularizationItem,
+  SetupStatus,
+  StatusItem,
+  User,
+  UserSettings
+} from './types';
 
 const API_BASE = '/api';
-const AUTH_TOKEN_KEY = 'ma_badgeuse_token';
 
-export function getStoredToken(): string | null {
-  return localStorage.getItem(AUTH_TOKEN_KEY);
-}
+/** Événement émis quand le serveur répond 401 : l'application revient à l'écran de connexion. */
+export const UNAUTHENTICATED_EVENT = 'ma-badgeuse:unauthenticated';
 
-export function setStoredToken(token: string | null) {
-  if (token) {
-    localStorage.setItem(AUTH_TOKEN_KEY, token);
-  } else {
-    localStorage.removeItem(AUTH_TOKEN_KEY);
+export class ApiError extends Error {
+  constructor(message: string, public status: number, public code?: string) {
+    super(message);
   }
 }
 
-export async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const token = getStoredToken();
-  const adminPin = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('admin_pin') : null;
-  const headers = new Headers(init?.headers || {});
-  if (token && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${token}`);
+/**
+ * Appel à l'API. La session est portée par un cookie HttpOnly envoyé
+ * automatiquement par le navigateur : aucun jeton ni code n'est stocké en JavaScript.
+ */
+async function request<T = any>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
+  const init: RequestInit = { method: options.method || 'GET', credentials: 'same-origin', headers: {} };
+  if (options.body instanceof FormData) {
+    init.body = options.body;
+  } else if (options.body !== undefined) {
+    (init.headers as Record<string, string>)['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(options.body);
   }
-  if (adminPin && !headers.has('x-admin-pin')) {
-    headers.set('x-admin-pin', adminPin);
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, init);
+  } catch {
+    throw new ApiError('Serveur injoignable. Vérifiez votre connexion au réseau.', 0);
   }
-  return fetch(input, {
-    ...init,
-    headers
-  });
+
+  let json: any = null;
+  try {
+    json = await res.json();
+  } catch {
+    json = null;
+  }
+
+  if (res.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/auth/change-password')) {
+    window.dispatchEvent(new Event(UNAUTHENTICATED_EVENT));
+  }
+  if (!res.ok || !json || json.success === false) {
+    const message = json?.error || json?.message || `Erreur du serveur (${res.status}).`;
+    throw new ApiError(message, res.status, json?.code);
+  }
+  return json as T;
 }
 
-// ================= AUTHENTICATION APIS =================
+const data = async <T>(path: string, options?: { method?: string; body?: unknown }): Promise<T> => (await request<{ data: T }>(path, options)).data;
+const enc = encodeURIComponent;
 
-export async function apiLogin(username: string, password: string): Promise<{ token: string; user: User }> {
-  const res = await fetch(`${API_BASE}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || 'Erreur de connexion');
-  setStoredToken(json.data.token);
-  return json.data;
+// ================= AUTHENTIFICATION =================
+
+export const apiSetupStatus = () => data<SetupStatus>('/auth/setup-status');
+
+export async function apiLogin(username: string, password: string): Promise<User> {
+  return (await data<{ user: User }>('/auth/login', { method: 'POST', body: { username, password } })).user;
 }
 
-export async function apiRegister(data: {
-  username: string;
-  displayName: string;
-  password: string;
-  securityQuestion: string;
-  securityAnswer: string;
-}): Promise<{ token: string; user: User }> {
-  const res = await fetch(`${API_BASE}/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || 'Erreur lors de la création du compte');
-  setStoredToken(json.data.token);
-  return json.data;
+export async function apiRegister(body: { username: string; displayName: string; password: string }): Promise<User> {
+  return (await data<{ user: User }>('/auth/register', { method: 'POST', body })).user;
 }
 
 export async function apiGetMe(): Promise<User | null> {
-  const token = getStoredToken();
-  if (!token) return null;
   try {
-    const res = await authFetch(`${API_BASE}/auth/me`);
-    const json = await res.json();
-    if (!json.success || !json.data) {
-      setStoredToken(null);
-      return null;
-    }
-    return json.data?.user || json.data;
+    return await data<User | null>('/auth/me');
   } catch {
     return null;
   }
@@ -81,108 +87,36 @@ export async function apiGetMe(): Promise<User | null> {
 
 export async function apiLogout(): Promise<void> {
   try {
-    await authFetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+    await request('/auth/logout', { method: 'POST' });
   } catch {
-    // Ignore error
-  } finally {
-    setStoredToken(null);
+    // La session sera de toute façon oubliée côté navigateur au rechargement.
   }
 }
 
-export async function apiGetSecurityQuestion(username: string): Promise<{ username: string; display_name: string; security_question: string }> {
-  const res = await fetch(`${API_BASE}/auth/security-question?username=${encodeURIComponent(username)}`);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || 'Utilisateur introuvable');
-  return json.data;
+export async function apiChangePassword(currentPassword: string, newPassword: string): Promise<string> {
+  return (await request<{ message: string }>('/auth/change-password', { method: 'POST', body: { currentPassword, newPassword } })).message;
 }
 
-export async function apiResetPassword(data: {
-  username: string;
-  securityAnswer: string;
-  newPassword: string;
-}): Promise<{ token: string; user: User }> {
-  const res = await fetch(`${API_BASE}/auth/reset-password`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || 'Erreur lors de la réinitialisation');
-  setStoredToken(json.data.token);
-  return json.data;
-}
+// ================= ADMINISTRATION =================
 
-export async function apiListUsers(): Promise<User[]> {
-  try {
-    const res = await fetch(`${API_BASE}/auth/users`);
-    const json = await res.json();
-    if (!json.success) return [];
-    return json.data;
-  } catch {
-    return [];
-  }
-}
+export const apiListUsers = () => data<User[]>('/admin/users');
+export const apiCreateUser = (body: { username: string; displayName: string; password: string }) =>
+  data<User>('/admin/users', { method: 'POST', body });
+export const apiResetUserPassword = (id: number) =>
+  data<{ user: User; temporary_password: string }>(`/admin/users/${id}/reset-password`, { method: 'POST' });
+export const apiSetUserAdmin = (id: number, isAdmin: boolean) => data<User>(`/admin/users/${id}/admin`, { method: 'PUT', body: { is_admin: isAdmin } });
+export const apiDeleteUser = (id: number) => request(`/admin/users/${id}`, { method: 'DELETE' });
+export const apiGetAdminSettings = () => data<{ registration_open: boolean }>('/admin/settings');
+export const apiSetRegistrationOpen = (open: boolean) =>
+  data<{ registration_open: boolean }>('/admin/settings', { method: 'PUT', body: { registration_open: open } });
 
-export async function apiVerifyAdminPin(pin: string): Promise<boolean> {
-  const res = await authFetch(`${API_BASE}/auth/verify-admin-pin`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pin })
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || 'Code PIN administrateur incorrect');
-  if (typeof sessionStorage !== 'undefined') {
-    sessionStorage.setItem('admin_pin', pin);
-  }
-  return true;
-}
+// ================= DONNÉES =================
 
-export async function apiChangeAdminPin(oldPin: string, newPin: string): Promise<void> {
-  const res = await authFetch(`${API_BASE}/auth/change-admin-pin`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ oldPin, newPin })
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || 'Erreur lors de la modification du code PIN');
-  if (typeof sessionStorage !== 'undefined') {
-    sessionStorage.setItem('admin_pin', newPin);
-  }
-}
+export const fetchSummary = (month: string) => data<CockpitSummary>(`/summary?month=${enc(month)}`);
+export const fetchAnnualSummary = (startYear: number) => data<AnnualCockpitSummary>(`/summary/annual?start_year=${startYear}`);
+export const fetchEntries = (month: string) => data<DailyEntry[]>(`/entries?month=${enc(month)}`);
 
-export async function apiDeleteUser(userId: number): Promise<void> {
-  const res = await authFetch(`${API_BASE}/auth/users/${userId}`, {
-    method: 'DELETE'
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || 'Erreur lors de la suppression du compte');
-}
-
-// ================= DATA APIS =================
-
-export async function fetchSummary(month?: string): Promise<CockpitSummary> {
-  const url = month ? `${API_BASE}/summary?month=${month}` : `${API_BASE}/summary`;
-  const res = await authFetch(url);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || 'Erreur lors du chargement du cockpit');
-  return json.data;
-}
-
-export async function fetchEntries(month: string): Promise<DailyEntry[]> {
-  const res = await authFetch(`${API_BASE}/entries?month=${month}`);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || 'Erreur lors du chargement des pointages');
-  return json.data;
-}
-
-export async function fetchEntryByDate(date: string): Promise<DailyEntry | null> {
-  const res = await authFetch(`${API_BASE}/entries/${date}`);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function saveEntry(data: {
+export const saveEntry = (body: {
   entry_date: string;
   expected_hours: number;
   start_time?: string | null;
@@ -190,307 +124,73 @@ export async function saveEntry(data: {
   break_minutes?: number;
   manual_actual_hours?: number | null;
   status_id?: number | null;
+  absence_reason?: string | null;
+  absence_impact?: AbsenceImpact | null;
   notes?: string | null;
-  audit_reason?: string;
-}): Promise<DailyEntry> {
-  const res = await authFetch(`${API_BASE}/entries`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || "Erreur lors de l'enregistrement");
-  return json.data;
-}
+}) => data<DailyEntry>('/entries', { method: 'POST', body });
 
-export async function deleteEntry(date: string): Promise<void> {
-  const res = await authFetch(`${API_BASE}/entries/${date}`, { method: 'DELETE' });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-}
+export const deleteEntry = (date: string) => request(`/entries/${enc(date)}`, { method: 'DELETE' });
 
-export async function fetchStatuses(): Promise<StatusItem[]> {
-  const res = await authFetch(`${API_BASE}/status`);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
+export const fetchStatuses = () => data<StatusItem[]>('/status');
 
-export async function updateStatus(id: number, data: Partial<StatusItem>): Promise<StatusItem> {
-  const res = await authFetch(`${API_BASE}/status/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function createStatus(data: {
-  code: string;
-  label: string;
-  color_hex: string;
-  accounting_rule: string;
-}): Promise<StatusItem> {
-  const res = await authFetch(`${API_BASE}/status`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function fetchPeriods(): Promise<PeriodItem[]> {
-  const res = await authFetch(`${API_BASE}/periods`);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function checkPeriodConflicts(start_date: string, end_date: string): Promise<{
-  has_conflicts: boolean;
-  conflicted_days: Array<{
-    entry_date: string;
-    expected_hours: number;
-    actual_hours: number;
-    status_label?: string;
-  }>;
-}> {
-  const res = await authFetch(`${API_BASE}/periods/check-conflicts`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ start_date, end_date })
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json;
-}
-
-export async function createPeriod(data: {
+export const fetchPeriods = () => data<PeriodItem[]>('/periods');
+export const createPeriod = (body: {
   label: string;
   start_date: string;
   end_date: string;
   status_id: number | null;
-  color_hex?: string | null;
   notes?: string | null;
   preserve_overrides: boolean;
   skip_weekends?: boolean;
   expected_hours_per_day?: number;
   actual_hours_per_day?: number;
-}): Promise<any> {
-  const res = await authFetch(`${API_BASE}/periods`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
+  absence_reason?: string | null;
+  absence_impact?: AbsenceImpact | null;
+}) => data<{ id: number; days_modified: number }>('/periods', { method: 'POST', body });
+export const deletePeriod = (id: number) => request(`/periods/${id}`, { method: 'DELETE' });
 
-export async function deletePeriod(id: number): Promise<void> {
-  const res = await authFetch(`${API_BASE}/periods/${id}`, { method: 'DELETE' });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-}
-
-export async function fetchRegularizations(counter_type?: string): Promise<RegularizationItem[]> {
-  const url = counter_type ? `${API_BASE}/regularizations?counter_type=${counter_type}` : `${API_BASE}/regularizations`;
-  const res = await authFetch(url);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function createRegularization(data: {
+export const fetchRegularizations = () => data<RegularizationItem[]>('/regularizations');
+export const createRegularization = (body: {
   reg_date: string;
   counter_type: 'POSITIVE' | 'NEGATIVE';
-  operation_type?: 'SETTLE' | 'ADD';
+  operation_type: 'SETTLE' | 'ADD';
   amount_hours: number;
   reason: string;
-}): Promise<RegularizationItem> {
-  const res = await authFetch(`${API_BASE}/regularizations`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
+}) => data<RegularizationItem>('/regularizations', { method: 'POST', body });
+export const deleteRegularization = (id: number) => request(`/regularizations/${id}`, { method: 'DELETE' });
+
+export const fetchAuditLogs = (limit = 50) => data<AuditLogItem[]>(`/audit?limit=${limit}`);
+export const triggerUndo = async () => (await request<{ message: string }>('/audit/undo', { method: 'POST' })).message;
+
+export const updateMonthlyTarget = (yearMonth: string, targetHours: number) =>
+  data('/targets', { method: 'POST', body: { year_month: yearMonth, target_hours: targetHours } });
+export const validateMonth = (yearMonth: string) => request(`/targets/${enc(yearMonth)}/validate`, { method: 'POST' });
+export const unvalidateMonth = (yearMonth: string) => request(`/targets/${enc(yearMonth)}/unvalidate`, { method: 'POST' });
+
+export const fetchSettings = () => data<UserSettings>('/settings');
+export const saveSettings = (settings: Partial<UserSettings>) => data<UserSettings>('/settings', { method: 'POST', body: settings });
+
+export const entriesCsvUrl = (month: string) => `${API_BASE}/export/entries.csv?month=${enc(month)}`;
+
+// ================= SAUVEGARDES (administrateurs) =================
+
+export const fetchDatabaseStatus = () => data<DatabaseStatus>('/backup/status');
+export const fetchBackupList = () => data<BackupItem[]>('/backup/list');
+export const createBackupNow = () => data<{ filename: string }>('/backup/create', { method: 'POST' });
+export const restoreBackup = (filename: string) => request<{ message: string }>(`/backup/restore/${enc(filename)}`, { method: 'POST' });
+export const triggerOptimizeDatabase = () => request<{ message: string }>('/backup/optimize', { method: 'POST' });
+export const triggerResetServerAll = (confirmation: string) =>
+  request<{ message: string; safetyBackup: string }>('/backup/reset-server-all', { method: 'POST', body: { confirmation } });
+export const backupDownloadUrl = (filename: string) => `${API_BASE}/backup/download/${enc(filename)}`;
+export const exportCurrentDatabaseUrl = `${API_BASE}/backup/export-current`;
+
+export function uploadRestoreBackup(file: File) {
+  const form = new FormData();
+  form.append('database_file', file);
+  return request<{ message: string }>('/backup/upload-restore', { method: 'POST', body: form });
 }
 
-export async function deleteRegularization(id: number): Promise<void> {
-  const res = await authFetch(`${API_BASE}/regularizations/${id}`, { method: 'DELETE' });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-}
+// ================= REMISE À ZÉRO PERSONNELLE =================
 
-export async function fetchAuditLogs(limit: number = 50): Promise<AuditLogItem[]> {
-  const res = await authFetch(`${API_BASE}/audit?limit=${limit}`);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function triggerUndo(): Promise<{ success: boolean; message: string }> {
-  const res = await authFetch(`${API_BASE}/audit/undo`, { method: 'POST' });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.message || json.error);
-  return json;
-}
-
-export async function updateMonthlyTarget(year_month: string, target_hours: number, notes?: string): Promise<any> {
-  const res = await authFetch(`${API_BASE}/targets`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ year_month, target_hours, notes })
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function validateMonth(year_month: string): Promise<any> {
-  const res = await authFetch(`${API_BASE}/targets/${year_month}/validate`, { method: 'POST' });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function unvalidateMonth(year_month: string): Promise<any> {
-  const res = await authFetch(`${API_BASE}/targets/${year_month}/unvalidate`, { method: 'POST' });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function createBackupNow(): Promise<any> {
-  const res = await authFetch(`${API_BASE}/backup/create`, { method: 'POST' });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function fetchBackupList(): Promise<any[]> {
-  const res = await authFetch(`${API_BASE}/backup/list`);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function restoreBackup(filename: string): Promise<any> {
-  const res = await authFetch(`${API_BASE}/backup/restore/${filename}`, { method: 'POST' });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json;
-}
-
-export async function fetchDatabaseStatus(): Promise<{
-  integrity: string;
-  databaseSizeKb: number;
-  walSizeKb: number;
-  totalEntries: number;
-  totalRegularizations: number;
-  totalPeriods: number;
-  totalBackups: number;
-  lastBackupDate: string | null;
-}> {
-  const res = await authFetch(`${API_BASE}/backup/status`);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function triggerOptimizeDatabase(): Promise<{ success: boolean; message: string }> {
-  const res = await authFetch(`${API_BASE}/backup/optimize`, { method: 'POST' });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json;
-}
-
-export async function triggerResetDatabase(confirmation: string): Promise<{ success: boolean; message: string; safetyBackup: string }> {
-  const res = await authFetch(`${API_BASE}/backup/reset`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirmation })
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || "Échec de la remise à zéro");
-  return json;
-}
-
-export async function triggerResetMyData(confirmation: string): Promise<{ success: boolean; message: string; safetyBackup: string }> {
-  const res = await authFetch(`${API_BASE}/backup/reset-my-data`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirmation })
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || "Échec de la remise à zéro de votre espace");
-  return json;
-}
-
-export async function triggerResetServerAll(confirmation: string): Promise<{ success: boolean; message: string; safetyBackup: string }> {
-  const res = await authFetch(`${API_BASE}/backup/reset-server-all`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirmation })
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || "Échec de la remise à zéro du serveur");
-  return json;
-}
-
-export async function uploadRestoreBackup(file: File): Promise<any> {
-  const formData = new FormData();
-  formData.append('database_file', file);
-  const res = await authFetch(`${API_BASE}/backup/upload-restore`, {
-    method: 'POST',
-    body: formData
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json;
-}
-
-export async function fetchSettings(): Promise<Record<string, string>> {
-  try {
-    const res = await authFetch(`${API_BASE}/settings`);
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error);
-    return json.data;
-  } catch {
-    return {
-      habitual_start_time: '10:45',
-      habitual_end_time: '14:45',
-      habitual_break_minutes: '0',
-      habitual_expected_hours: '4.0'
-    };
-  }
-}
-
-export async function saveSettings(settings: Record<string, string>): Promise<Record<string, string>> {
-  const res = await authFetch(`${API_BASE}/settings`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settings)
-  });
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error);
-  return json.data;
-}
-
-export async function fetchAnnualSummary(startYear?: number): Promise<AnnualCockpitSummary> {
-  const url = startYear ? `${API_BASE}/summary/annual?start_year=${startYear}` : `${API_BASE}/summary/annual`;
-  const res = await authFetch(url);
-  const json = await res.json();
-  if (!json.success) throw new Error(json.error || 'Erreur lors du chargement du bilan annuel');
-  return json.data;
-}
-
-export async function saveAnnualTarget(hours: number): Promise<Record<string, string>> {
-  return saveSettings({ annual_target_hours: String(hours) });
-}
+export const triggerResetMyData = (confirmation: string) =>
+  request<{ message: string; safetyBackup: string }>('/backup/reset-my-data', { method: 'POST', body: { confirmation } });

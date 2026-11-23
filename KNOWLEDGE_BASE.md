@@ -1,7 +1,7 @@
 # Base de Connaissances & Spécifications Métier (KNOWLEDGE_BASE.md)
-**Application :** Suivi Heures Pro (Ma Badgeuse)  
-**Version :** 0.2.0  
-**Date :** Novembre 2026  
+**Application :** Ma Badgeuse  
+**Version :** 0.3.0  
+**Date :** 23 novembre 2026  
 **Cible :** Salariée de cantine scolaire & entretien communal (horaires variables, annualisation, forte saisonnalité)
 
 ---
@@ -56,13 +56,20 @@ $$H_{\text{effectuées}} = \max\left(0, D_{\text{brute}} - \frac{P}{60}\right)$$
 #### 2.2.2. Écart Journalier & Règles Comptables des Statuts
 $$\Delta_{\text{jour}} = H_{\text{effectuées}} - H_{\text{attendues}}$$
 
-Le statut de la journée module le calcul de l'écart :
-- **`MAINTAINED` (Congé payé, Arrêt maladie avec maintien) :**
-  Les heures attendues sont réputées faites : $H_{\text{effectuées}} \ge H_{\text{attendues}} \implies \Delta_{\text{négatif}} = 0$.
-- **`NEUTRAL` (Journée de repos, Jour à 0h) :**
-  Aucun impact, $\Delta_{\text{négatif}} = 0$.
-- **`DEDUCTED` (Absence non rémunérée / À rattraper) :**
-  Génère un passif égal aux heures manquées.
+Le statut de la journée module le calcul de l'écart (`backend/src/services/hoursService.ts`) :
+- **`MAINTAINED` (congé payé, arrêt maladie, férié, fermeture…) :** jamais de dette ; les heures faites au-delà du prévu comptent en plus.
+- **`NEUTRAL` (jour à 0 h) et `VARIABLE` (vacances scolaires) :** aucune dette ; toute heure travaillée ce jour-là compte en plus.
+- **`DEDUCTED` (congé sans solde) et `CUSTOM` :** écart brut, les heures manquées créent une dette.
+
+Pour une absence, l'utilisatrice choisit aussi l'**impact**, enregistré avec la journée (`absence_reason`, `absence_impact`) :
+- **Neutre** : 0 h prévue, 0 h faite.
+- **À rattraper** : X h prévues, 0 h faite (dette de X h, sauf statut `MAINTAINED`).
+- **Compté travaillé** : X h prévues et faites (avance l'objectif du mois).
+
+> Les heures sont stockées en décimal (4.25 = 4 h 15) et toujours affichées en heures et minutes. Le passage au stockage en minutes entières n'a pas été fait (voir `audit.md`).
+
+#### 2.2.3 bis. Mois validé
+Un mois validé (`monthly_targets.is_validated`) est verrouillé : le serveur refuse (409) toute création, modification ou suppression de journée, période, régularisation ou objectif datée de ce mois, jusqu'à sa réouverture.
 
 #### 2.2.3. Compensation Directe des Soldes (Rattrapage Automatique)
 Soient $\text{Brut}_{\text{pos}}$ la somme de tous les dépassements positifs historiques (plus les ajouts manuels) et $\text{Brut}_{\text{nég}}$ la somme de toutes les absences (plus les déductions manuelles) :
@@ -78,7 +85,8 @@ $$\text{Si } \text{Brut}_{\text{nég}} > \text{Brut}_{\text{pos}} \implies \begi
 Si l'employeur paie directement des heures sup sur la fiche de paie (sans repos compensateur) :
 - Saisie d'une régularisation explicite (`SETTLE` pour déduire du solde, ou `ADD` pour ajouter un reliquat).
 - Motif obligatoire (ex. « Paiement fiche de paie octobre »).
-- Traçabilité intégrale dans `audit_logs`.
+- Un règlement (`SETTLE`) ne peut pas dépasser le solde affiché ni être daté dans le futur.
+- Traçabilité intégrale dans `audit_logs` ; « Annuler » rétablit la dernière action non encore annulée (`undone_at`).
 
 ---
 
@@ -102,37 +110,33 @@ L'accueil mobile présente en haut d'écran la **Vignette Phare** :
 - Toutes les tables métier (`daily_entries`, `periods`, `regularizations`, `monthly_targets`, `audit_logs`, `user_settings`) comportent une colonne `user_id`.
 - Chaque requête SQL du backend filtre obligatoirement sur `user_id = req.userId`.
 
-### 3.2. Remise à Zéro Personnelle Sécurisée (`resetUserData`)
-- Accessible à tout utilisateur pour son propre compte.
-- **Sauvegarde d'urgence immédiate :** Crée un fichier `safety_user_{id}_{timestamp}.sqlite` avant toute suppression.
-- **Exclusion de purge :** Ces sauvegardes `safety_` sont exemptées de la rotation automatique des 14 jours.
-- Supprime uniquement les enregistrements appartenant à l'utilisateur connecté (`WHERE user_id = ?`). Les autres comptes restent 100% intacts.
+### 3.2. Effacement de ses propres données (`resetUserData`)
+- Accessible à tout utilisateur pour son propre compte (onglet *Mon compte*, confirmation `RESET`).
+- Crée d'abord une sauvegarde `safety_user_{id}_{horodatage}.sqlite`.
+- Efface les journées, périodes, régularisations, objectifs mensuels et l'historique du compte ; **conserve les réglages** et le compte. Les autres comptes ne sont pas touchés.
 
-### 3.3. Hachage des Mots de Passe & Protection Anti-Bruteforce
-- **Algorithme PBKDF2 salé :** 10 000 itérations SHA-256 avec sel aléatoire de 16 octets (`salt:hash`).
-- **Préservation de la casse :** Majuscules et minuscules strictement respectées.
-- **Rétrocompatibilité transparente :** Reconnait les anciens hash SHA-256 et les migre automatiquement vers PBKDF2 lors de la connexion.
-- **Rate Limiting :** 5 tentatives infructueuses entraînent un blocage temporaire de 15 minutes.
+### 3.3. Comptes, rôles et mots de passe
+- **Rôle administrateur** (`users.is_admin`) ; le premier compte créé est administrateur, le dernier administrateur ne peut être ni supprimé ni rétrogradé.
+- **Inscription** fermée après le premier compte (`app_settings.registration_open`), réouvrable par un administrateur.
+- **Hachage scrypt** (N=16384, r=8, p=1, clé 32 octets, format `scrypt$N$r$p$sel$hash`) ; anciens formats PBKDF2 et SHA-256 acceptés puis convertis à la connexion. 10 caractères minimum.
+- **Mot de passe temporaire** donné par l'administrateur ou par `node backend/dist/scripts/resetPassword.js <identifiant> [--admin]` : changement obligatoire à la connexion (`must_change_password`).
+- **Limitation des essais** : 5 échecs par compte → 15 min ; 20 échecs par adresse IP / 15 min ; 5 inscriptions par IP / heure.
 
-### 3.4. Mode Administrateur Verrouillé par PIN
-- Authentification par header HTTP `x-admin-pin`.
-- Verrouille l'accès aux opérations serveur :
-  - Création et liste des sauvegardes globales Proxmox.
-  - Export direct de la base SQLite active.
-  - Restauration de sauvegardes et upload de fichiers `.sqlite` (limité à 50 Mo).
-  - Suppression de comptes utilisateurs (compte #1 protégé).
-  - Remise à zéro totale du serveur (`RESET_SERVEUR`).
+### 3.4. Sessions et protections HTTP
+- Cookie `mb_session` `HttpOnly`, `SameSite=Strict`, `Secure` si `COOKIE_SECURE=true` ou requête HTTPS ; 30 jours glissants ; jeton stocké en SHA-256.
+- Requêtes d'écriture acceptées seulement depuis la même origine (ou `ALLOWED_ORIGINS`).
+- En-têtes CSP, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer` ; corps JSON limité à 100 Ko.
+
+### 3.5. Administration du serveur (administrateurs)
+- État de la base, optimisation (`VACUUM`), sauvegardes (création, liste, téléchargement), restauration depuis le serveur ou un fichier (vérifié avant remplacement, sauvegarde de sécurité, retour arrière automatique en cas d'échec), effacement des données de tous les comptes (`RESET_SERVEUR`).
+- Rotation : 14 sauvegardes quotidiennes, 20 sauvegardes de sécurité.
 
 ---
 
-## 4. APPLICATION MOBILE (PWA) & INSTALLATION
+## 4. UTILISATION SUR SMARTPHONE
 
-L'application intègre le standard PWA (Progressive Web App) :
-- **Icônes natives générées :**
-  - `pwa-192x192.png` : Grille d'applications Android.
-  - `pwa-512x512.png` : Écran de démarrage (*splash screen*) haute définition.
-  - `apple-touch-icon.png` : Raccourci Safari iOS (180x180).
-  - `favicon-64x64.png` : Onglet navigateur desktop.
-- **Mode Standalone :** Fonctionne en plein écran sans barre d'adresse de navigateur.
-- **Thème Sombre / Clair :** Détection automatique des préférences système ou sélection manuelle.
-- **Notifications de Rappel de Pointage :** Rappel configurable (délai après la fin de poste) pour ne jamais oublier de badger.
+- L'application est utilisée **exclusivement sur téléphone** : en-tête compact, **barre de navigation en bas** (Pointer, Congés, Bilan, Envoyer, Plus), menu « Plus » (réglages, historique, compte, administration, impression, thème, installation, déconnexion).
+- **PWA installable** (`manifest.webmanifest`, icônes `pwa-192x192.png`, `pwa-512x512.png`, `apple-touch-icon.png`). Sur Android, une fenêtre propose l'installation : en un geste en HTTPS, sinon explication de l'ajout par le menu de Chrome. Une fois l'application installée ou la proposition refusée, elle n'est plus proposée automatiquement.
+- Le service worker `sw.js` ne met rien en cache : une connexion au serveur reste nécessaire (hors réseau, il affiche « Serveur injoignable »). Il n'est actif qu'en HTTPS ou sur `localhost`.
+- **Thème** clair, sombre ou automatique (préférence mémorisée sur l'appareil).
+- **Rappel de pointage** par notification, uniquement quand l'application est ouverte ; réglage mémorisé sur l'appareil. Sur Android, la notification passe par le service worker, donc exige HTTPS.

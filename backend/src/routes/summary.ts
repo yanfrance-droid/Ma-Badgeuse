@@ -1,37 +1,27 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
 import { getGlobalCockpitSummary, getAnnualCockpitSummary, getCurrentSchoolYearStart } from '../services/hoursService';
+import { asyncHandler, localYearMonth, requireInteger, requireUserId, requireYearMonth } from '../http';
 
 export const summaryRouter = Router();
 
-/**
- * GET /api/summary/annual?start_year=YYYY
- * Renvoie le bilan annuel scolaire (Septembre à Août) avec décompte du quota d'heures
- */
-summaryRouter.get('/annual', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const defaultStartYear = getCurrentSchoolYearStart(new Date());
-    const startYear = req.query.start_year ? parseInt(req.query.start_year as string, 10) : defaultStartYear;
-    const summary = await getAnnualCockpitSummary(userId, isNaN(startYear) ? defaultStartYear : startYear);
-    res.json({ success: true, data: summary });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+/** GET /api/summary/annual?start_year=AAAA — bilan de l'année scolaire (septembre à août). */
+summaryRouter.get(
+  '/annual',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const startYear = req.query.start_year === undefined
+      ? getCurrentSchoolYearStart(new Date())
+      : requireInteger(req.query.start_year, "L'année scolaire", 2000, 2100);
+    res.json({ success: true, data: await getAnnualCockpitSummary(userId, startYear) });
+  })
+);
 
-/**
- * GET /api/summary?month=YYYY-MM
- * Renvoie les métriques pour la Vignette Phare (Positif, Négatif, Bilan du mois, Stats)
- */
-summaryRouter.get('/', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const now = new Date();
-    const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const month = (req.query.month as string) || defaultMonth;
-    const summary = await getGlobalCockpitSummary(userId, month);
-    res.json({ success: true, data: summary });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+/** GET /api/summary?month=AAAA-MM — compteurs et bilan du mois. */
+summaryRouter.get(
+  '/',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const month = req.query.month === undefined ? localYearMonth() : requireYearMonth(req.query.month, 'Le mois');
+    res.json({ success: true, data: await getGlobalCockpitSummary(userId, month) });
+  })
+);

@@ -1,316 +1,311 @@
 import fs from 'fs';
 import path from 'path';
-import { db, rawDb, closeDatabase, reopenDatabase } from '../database';
+import sqlite3 from 'sqlite3';
+import { db, getDatabasePath, initDatabase, withDatabaseClosed } from '../database';
+import { HttpError } from '../http';
+import { purgeExpiredSessions } from './authService';
 
-const DEFAULT_BACKUP_DIR = path.resolve(__dirname, '../../backups');
-const BACKUP_DIR = process.env.BACKUP_DIR || DEFAULT_BACKUP_DIR;
+const BACKUP_DIR = process.env.BACKUP_DIR || path.resolve(__dirname, '../../backups');
+/** Fichiers temporaires (envois, exports) : dans le dossier de sauvegarde, donc dans le volume Docker. */
+export const BACKUP_TMP_DIR = path.join(BACKUP_DIR, 'tmp');
 
-// Assurer que le dossier de backup existe
-if (!fs.existsSync(BACKUP_DIR)) {
-  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+for (const dir of [BACKUP_DIR, BACKUP_TMP_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-/**
- * Nettoie les anciennes sauvegardes au-delà du nombre maximum conservé
- */
-export function cleanOldBackups(maxKeep: number = 14): void {
-  try {
-    const backups = listBackups();
-    // Les sauvegardes d'urgence (préfixées par 'safety_') sont sacrées : on ne les purge JAMAIS automatiquement
-    const routineBackups = backups.filter((b) => !b.filename.startsWith('safety_'));
-    if (routineBackups.length > maxKeep) {
-      const toRemove = routineBackups.slice(maxKeep);
-      for (const b of toRemove) {
-        const p = path.join(BACKUP_DIR, b.filename);
-        if (fs.existsSync(p)) {
-          fs.unlinkSync(p);
-          console.log(`[Backup] Ancienne sauvegarde purgée (${b.filename})`);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[Backup] Erreur lors de la rotation des sauvegardes:', err);
-  }
+const ROUTINE_BACKUPS_TO_KEEP = 14;
+const SAFETY_BACKUPS_TO_KEEP = 20;
+
+export function getBackupDir(): string {
+  return BACKUP_DIR;
 }
 
-/**
- * Crée une sauvegarde à chaud de la base SQLite
- */
-export async function createDatabaseBackup(prefix: string = 'backup'): Promise<{ filename: string; filepath: string; sizeBytes: number }> {
-  const timestamp = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);
-  const filename = `${prefix}_${timestamp}.sqlite`;
-  const filepath = path.join(BACKUP_DIR, filename);
-
-  // SQLite VACUUM INTO permet de créer une copie cohérente à chaud même sous WAL
-  try {
-    const sanitizedPath = filepath.replace(/\\/g, '/');
-    await db.exec(`VACUUM INTO '${sanitizedPath}'`);
-  } catch (err) {
-    console.warn('[Backup] VACUUM INTO a échoué, tentative de fallback par checkpoint + copie:', err);
-    try {
-      await db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    } catch {}
-    const dbPath = (rawDb as any).filename;
-    fs.copyFileSync(dbPath, filepath);
-  }
-
-  const stats = fs.statSync(filepath);
-  cleanOldBackups(14);
-
-  return {
-    filename,
-    filepath,
-    sizeBytes: stats.size
-  };
+export interface BackupInfo {
+  filename: string;
+  sizeBytes: number;
+  createdAt: string;
+  isAuto: boolean;
+  isSafety: boolean;
 }
 
-/**
- * Liste toutes les sauvegardes existantes
- */
-export function listBackups(): Array<{ filename: string; sizeBytes: number; createdAt: string; isAuto: boolean }> {
+export function listBackups(): BackupInfo[] {
   if (!fs.existsSync(BACKUP_DIR)) return [];
-
-  const files = fs.readdirSync(BACKUP_DIR).filter((f) => f.endsWith('.sqlite') || f.endsWith('.db'));
-  return files
+  return fs
+    .readdirSync(BACKUP_DIR)
+    .filter((f) => f.endsWith('.sqlite'))
     .map((filename) => {
-      const fullPath = path.join(BACKUP_DIR, filename);
-      const stats = fs.statSync(fullPath);
+      const stats = fs.statSync(path.join(BACKUP_DIR, filename));
       return {
         filename,
         sizeBytes: stats.size,
         createdAt: stats.mtime.toISOString(),
-        isAuto: filename.startsWith('auto_backup_')
+        isAuto: filename.startsWith('auto_backup_'),
+        isSafety: filename.startsWith('safety')
       };
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 /**
- * Restaure une sauvegarde depuis un fichier en fermant proprement la connexion
+ * Rotation : garde les 14 dernières sauvegardes ordinaires et les 20 dernières
+ * sauvegardes de sécurité (créées avant une restauration ou une remise à zéro).
  */
-export async function restoreBackupFromFile(sourceFilePath: string): Promise<void> {
-  const dbPath = (rawDb as any).filename;
-
-  // 1. Créer un backup d'urgence avant écrasement
-  await createDatabaseBackup('safety_pre_restore');
-
-  // 2. Vider le journal WAL et fermer la connexion active pour libérer les verrous Windows
-  try {
-    await db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-  } catch (e) {
-    console.warn('[Backup] checkpoint avant restauration a échoué (non bloquant):', e);
+export function cleanOldBackups(): void {
+  const all = listBackups();
+  const groups: Array<[BackupInfo[], number]> = [
+    [all.filter((b) => !b.isSafety), ROUTINE_BACKUPS_TO_KEEP],
+    [all.filter((b) => b.isSafety), SAFETY_BACKUPS_TO_KEEP]
+  ];
+  for (const [items, keep] of groups) {
+    for (const b of items.slice(keep)) {
+      try {
+        fs.unlinkSync(path.join(BACKUP_DIR, b.filename));
+        console.log(`[Backup] Ancienne sauvegarde supprimée : ${b.filename}`);
+      } catch (err) {
+        console.warn(`[Backup] Suppression impossible de ${b.filename} :`, err);
+      }
+    }
   }
-  await closeDatabase();
+}
 
-  // 3. Remplacer le fichier database.sqlite
-  fs.copyFileSync(sourceFilePath, dbPath);
+function timestamp(): string {
+  // AAAAMMJJHHMMSSmmm : deux sauvegardes dans la même seconde ne s'écrasent plus.
+  return new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 17);
+}
 
-  // 4. Supprimer les journaux WAL résiduels pour repartir d'un état propre
-  const walPath = `${dbPath}-wal`;
-  const shmPath = `${dbPath}-shm`;
-  if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
-  if (fs.existsSync(shmPath)) fs.unlinkSync(shmPath);
+/** Copie cohérente de la base, même en écriture (VACUUM INTO gère le mode WAL). */
+async function vacuumInto(target: string): Promise<void> {
+  const escaped = target.replace(/\\/g, '/').replace(/'/g, "''");
+  await db.exec(`VACUUM INTO '${escaped}'`);
+}
 
-  // 5. Réouvrir la connexion SQLite
-  await reopenDatabase();
+export async function createDatabaseBackup(prefix: string = 'backup'): Promise<{ filename: string; filepath: string; sizeBytes: number }> {
+  const filename = `${prefix}_${timestamp()}.sqlite`;
+  const filepath = path.join(BACKUP_DIR, filename);
+  await vacuumInto(filepath);
+  const { size } = fs.statSync(filepath);
+  cleanOldBackups();
+  return { filename, filepath, sizeBytes: size };
+}
 
-  // 6. Réactiver le mode WAL et les contraintes
-  await db.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
-    PRAGMA foreign_keys = ON;
-  `);
+/** Instantané temporaire pour un téléchargement : supprimé par l'appelant après envoi. */
+export async function createExportSnapshot(): Promise<string> {
+  const filepath = path.join(BACKUP_TMP_DIR, `export_${timestamp()}.sqlite`);
+  await vacuumInto(filepath);
+  return filepath;
+}
+
+/** Résout le nom d'une sauvegarde existante, sans possibilité de sortir du dossier. */
+export function resolveBackupFile(filename: unknown): string {
+  if (typeof filename !== 'string' || !/^[A-Za-z0-9_.-]+\.sqlite$/.test(filename)) {
+    throw new HttpError(400, 'Nom de sauvegarde invalide.');
+  }
+  const filepath = path.join(BACKUP_DIR, path.basename(filename));
+  if (!fs.existsSync(filepath)) {
+    throw new HttpError(404, 'Sauvegarde introuvable.');
+  }
+  return filepath;
+}
+
+const REQUIRED_TABLES = ['users', 'daily_entries', 'status_catalog', 'monthly_targets', 'regularizations'];
+
+/**
+ * Vérifie qu'un fichier est une base « Ma Badgeuse » intacte, sans toucher à la base active :
+ * en-tête SQLite, ouverture en lecture seule, PRAGMA integrity_check, tables attendues.
+ */
+export async function validateBackupFile(filepath: string): Promise<void> {
+  const fd = fs.openSync(filepath, 'r');
+  const header = Buffer.alloc(16);
+  try {
+    fs.readSync(fd, header, 0, 16, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (header.toString('latin1') !== 'SQLite format 3\u0000') {
+    throw new HttpError(400, "Ce fichier n'est pas une base SQLite. Rien n'a été modifié.");
+  }
+
+  const candidate = await new Promise<sqlite3.Database>((resolve, reject) => {
+    const conn = new sqlite3.Database(filepath, sqlite3.OPEN_READONLY, (err) => (err ? reject(err) : resolve(conn)));
+  });
+  const query = <T>(sql: string) =>
+    new Promise<T[]>((resolve, reject) => candidate.all(sql, (err, rows) => (err ? reject(err) : resolve(rows as T[]))));
+  try {
+    const integrity = await query<{ integrity_check: string }>('PRAGMA integrity_check');
+    if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
+      throw new HttpError(400, "Le fichier est endommagé (contrôle d'intégrité en échec). Rien n'a été modifié.");
+    }
+    const tables = (await query<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table'`)).map((t) => t.name);
+    const missing = REQUIRED_TABLES.filter((t) => !tables.includes(t));
+    if (missing.length > 0) {
+      throw new HttpError(400, `Ce fichier n'est pas une sauvegarde de Ma Badgeuse (tables absentes : ${missing.join(', ')}). Rien n'a été modifié.`);
+    }
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
+    throw new HttpError(400, "Le fichier n'a pas pu être lu comme une base SQLite. Rien n'a été modifié.");
+  } finally {
+    await new Promise<void>((resolve) => candidate.close(() => resolve()));
+  }
+}
+
+function replaceDatabaseFile(source: string): void {
+  const dbPath = getDatabasePath();
+  fs.copyFileSync(source, dbPath);
+  for (const suffix of ['-wal', '-shm']) {
+    if (fs.existsSync(dbPath + suffix)) fs.unlinkSync(dbPath + suffix);
+  }
 }
 
 /**
- * Diagnostic de santé complet de la base de données
+ * Restaure une sauvegarde. Le fichier est validé avant toute modification ;
+ * une sauvegarde de sécurité est créée ; la base restaurée est migrée au schéma
+ * courant. En cas d'échec, la sauvegarde de sécurité est remise en place.
+ * Toute l'opération s'exécute seule : aucune autre requête ne s'intercale.
  */
-export async function getDatabaseStatus(userId?: number): Promise<{
+export async function restoreBackupFromFile(sourceFilePath: string): Promise<{ safetyBackup: string }> {
+  await validateBackupFile(sourceFilePath);
+
+  return db.exclusive(async () => {
+    const safety = await createDatabaseBackup('safety_pre_restore');
+    try {
+      await withDatabaseClosed(async () => replaceDatabaseFile(sourceFilePath));
+      await initDatabase();
+    } catch (err) {
+      console.error('[Backup] Échec de la restauration, retour à la sauvegarde de sécurité :', err);
+      await withDatabaseClosed(async () => replaceDatabaseFile(safety.filepath));
+      await initDatabase();
+      throw new HttpError(500, "La restauration a échoué ; la base précédente a été remise en place.");
+    }
+    return { safetyBackup: safety.filename };
+  });
+}
+
+export async function getDatabaseStatus(): Promise<{
   integrity: string;
+  integrityOk: boolean;
   databaseSizeKb: number;
   walSizeKb: number;
+  totalUsers: number;
   totalEntries: number;
   totalRegularizations: number;
   totalPeriods: number;
   totalBackups: number;
   lastBackupDate: string | null;
 }> {
-  const dbPath = (rawDb as any).filename;
-  const walPath = `${dbPath}-wal`;
-
+  const dbPath = getDatabasePath();
   let integrity = 'ok';
   try {
-    const res = await db.get<any>(`PRAGMA integrity_check`);
-    integrity = res && res.integrity_check ? res.integrity_check : 'ok';
-  } catch (e: any) {
-    integrity = e.message;
+    const rows = await db.all<{ integrity_check: string }>('PRAGMA integrity_check');
+    integrity = rows.map((r) => r.integrity_check).join('; ') || 'inconnue';
+  } catch (err: any) {
+    integrity = `vérification impossible : ${err?.message ?? err}`;
   }
-
-  let dbSize = 0;
-  if (fs.existsSync(dbPath)) {
-    dbSize = Math.round(fs.statSync(dbPath).size / 1024);
-  }
-
-  let walSize = 0;
-  if (fs.existsSync(walPath)) {
-    walSize = Math.round(fs.statSync(walPath).size / 1024);
-  }
-
-  const entriesCount = userId
-    ? (await db.get<any>(`SELECT COUNT(*) as count FROM daily_entries WHERE user_id = ?`, [userId]))?.count || 0
-    : (await db.get<any>(`SELECT COUNT(*) as count FROM daily_entries`))?.count || 0;
-  const regCount = userId
-    ? (await db.get<any>(`SELECT COUNT(*) as count FROM regularizations WHERE user_id = ?`, [userId]))?.count || 0
-    : (await db.get<any>(`SELECT COUNT(*) as count FROM regularizations`))?.count || 0;
-  const periodsCount = userId
-    ? (await db.get<any>(`SELECT COUNT(*) as count FROM periods WHERE user_id = ?`, [userId]))?.count || 0
-    : (await db.get<any>(`SELECT COUNT(*) as count FROM periods`))?.count || 0;
-
+  const sizeKb = (file: string) => (fs.existsSync(file) ? Math.round(fs.statSync(file).size / 1024) : 0);
+  const count = async (table: string) => (await db.get<{ c: number }>(`SELECT COUNT(*) AS c FROM ${table}`))?.c ?? 0;
   const backups = listBackups();
-  const lastBackup = backups.length > 0 ? backups[0].createdAt : null;
-
   return {
     integrity,
-    databaseSizeKb: dbSize,
-    walSizeKb: walSize,
-    totalEntries: entriesCount,
-    totalRegularizations: regCount,
-    totalPeriods: periodsCount,
+    integrityOk: integrity === 'ok',
+    databaseSizeKb: sizeKb(dbPath),
+    walSizeKb: sizeKb(`${dbPath}-wal`),
+    totalUsers: await count('users'),
+    totalEntries: await count('daily_entries'),
+    totalRegularizations: await count('regularizations'),
+    totalPeriods: await count('periods'),
     totalBackups: backups.length,
-    lastBackupDate: lastBackup
+    lastBackupDate: backups[0]?.createdAt ?? null
   };
 }
 
-/**
- * Optimise la base : force le checkpoint WAL, compacte les pages et met à jour les stats
- */
 export async function optimizeDatabase(): Promise<{ success: boolean; message: string }> {
+  await db.exclusive(async () => {
+    await db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    await db.exec('VACUUM');
+    await db.exec('PRAGMA optimize');
+  });
+  const purged = await purgeExpiredSessions();
+  return { success: true, message: `Base compactée et optimisée (${purged} session(s) expirée(s) supprimée(s)).` };
+}
+
+async function compact(): Promise<void> {
   try {
-    await db.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
-    await db.exec(`VACUUM`);
-    await db.exec(`PRAGMA optimize`);
-    return { success: true, message: "Base de données compactée et optimisée avec succès." };
-  } catch (err: any) {
-    throw new Error(`Erreur lors de l'optimisation : ${err.message}`);
+    await db.exclusive(async () => {
+      await db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      await db.exec('VACUUM');
+    });
+  } catch (err) {
+    // Le compactage est un confort : son échec ne remet pas en cause l'effacement déjà validé.
+    console.warn('[Backup] Compactage après effacement impossible :', err);
   }
 }
 
 /**
- * Remise à zéro isolée du compte d'un utilisateur uniquement.
- * GARANTIE ABSOLUE : Ne touche STRICTEMENT JAMAIS aux données des autres utilisateurs.
+ * Efface les données de travail d'un compte : pointages, périodes, régularisations,
+ * objectifs mensuels et historique. Le compte et ses réglages sont conservés.
+ * Une copie de toute la base est faite avant l'effacement (dossier des sauvegardes).
  */
 export async function resetUserData(userId: number): Promise<{ success: boolean; message: string; safetyBackup: string }> {
-  if (!userId) {
-    throw new Error("Identifiant utilisateur manquant.");
-  }
-
-  // 1. Sauvegarde d'urgence immédiate sur le serveur avant effacement
-  const safetyBackup = await createDatabaseBackup(`safety_user_${userId}`);
-
-  // 2. Transaction SQL avec clause WHERE user_id = ? stricte
-  await db.exec('BEGIN TRANSACTION');
-  try {
-    await db.run('DELETE FROM daily_entries WHERE user_id = ?', [userId]);
-    await db.run('DELETE FROM periods WHERE user_id = ?', [userId]);
-    await db.run('DELETE FROM regularizations WHERE user_id = ?', [userId]);
-    await db.run('DELETE FROM monthly_targets WHERE user_id = ?', [userId]);
-    await db.run('DELETE FROM audit_logs WHERE user_id = ?', [userId]);
-    await db.run('DELETE FROM user_settings WHERE user_id = ?', [userId]);
-    await db.exec('COMMIT');
-  } catch (txErr) {
-    await db.exec('ROLLBACK');
-    throw txErr;
-  }
-
-  // 3. Compacter le fichier SQLite
-  try {
-    await db.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
-    await db.exec(`VACUUM`);
-  } catch {}
-
+  const safety = await createDatabaseBackup(`safety_user_${userId}`);
+  await db.transaction(async () => {
+    for (const table of ['daily_entries', 'periods', 'regularizations', 'monthly_targets', 'audit_logs']) {
+      await db.run(`DELETE FROM ${table} WHERE user_id = ?`, [userId]);
+    }
+  });
+  await compact();
   return {
     success: true,
-    message: "Votre espace personnel a été remis à zéro avec succès. Les données des autres membres de la famille restent 100% intactes.",
-    safetyBackup: safetyBackup.filename
+    message: 'Vos pointages, périodes, régularisations, objectifs et votre historique ont été effacés. Vos réglages et votre compte sont conservés. Les autres comptes ne sont pas touchés.',
+    safetyBackup: safety.filename
   };
 }
 
 /**
- * Remise à zéro complète du serveur (Tous les comptes - Admin uniquement)
+ * Efface les données de travail de tous les comptes (administrateurs uniquement).
+ * Les comptes, sessions, réglages et statuts sont conservés.
  */
-export async function resetServerAll(confirmation: string): Promise<{ success: boolean; message: string; safetyBackup: string }> {
+export async function resetServerAll(confirmation: unknown): Promise<{ success: boolean; message: string; safetyBackup: string }> {
   if (confirmation !== 'RESET_SERVEUR') {
-    throw new Error("Veuillez taper 'RESET_SERVEUR' pour confirmer la remise à zéro complète de tout le serveur.");
+    throw new HttpError(400, "Tapez RESET_SERVEUR pour confirmer l'effacement des données de tous les comptes.");
   }
-
-  const safetyBackup = await createDatabaseBackup('safety_pre_reset_all');
-
-  await db.exec('BEGIN TRANSACTION');
-  try {
-    await db.exec(`
-      DELETE FROM daily_entries;
-      DELETE FROM periods;
-      DELETE FROM regularizations;
-      DELETE FROM monthly_targets;
-      DELETE FROM audit_logs;
-      DELETE FROM sqlite_sequence WHERE name IN ('daily_entries', 'periods', 'regularizations', 'monthly_targets', 'audit_logs');
-    `);
-    await db.exec('COMMIT');
-  } catch (txErr) {
-    await db.exec('ROLLBACK');
-    throw txErr;
-  }
-
-  try {
-    await db.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
-    await db.exec(`VACUUM`);
-  } catch {}
-
+  const safety = await createDatabaseBackup('safety_server_reset');
+  await db.transaction(async () => {
+    for (const table of ['daily_entries', 'periods', 'regularizations', 'monthly_targets', 'audit_logs']) {
+      await db.run(`DELETE FROM ${table}`);
+    }
+  });
+  await compact();
   return {
     success: true,
-    message: "Toutes les données de tous les comptes ont été remises à zéro.",
-    safetyBackup: safetyBackup.filename
+    message: 'Les pointages, périodes, régularisations, objectifs et historiques de tous les comptes ont été effacés. Les comptes et leurs réglages sont conservés.',
+    safetyBackup: safety.filename
   };
 }
 
-/**
- * Démarre le planificateur de sauvegarde automatique sur le serveur
- * (1 sauvegarde par jour, conservées 14 jours)
- */
+let autoBackupTimer: NodeJS.Timeout | null = null;
+let firstCheckTimer: NodeJS.Timeout | null = null;
+
+/** Sauvegarde automatique : une par jour au plus, vérifiée toutes les heures. */
 export function startAutoBackupSchedule(): void {
-  console.log('[AutoBackup] Planificateur de sauvegarde automatique activé (Rotation 14 jours).');
-
-  // Vérification au démarrage : si pas de backup dans les dernières 24h, en créer une
-  const checkAndRun = async () => {
+  const runCheck = async () => {
     try {
-      const backups = listBackups();
-      const now = Date.now();
-      const lastBackup = backups.find((b) => b.isAuto || b.filename.startsWith('backup_'));
-
-      let shouldBackup = false;
-      if (!lastBackup) {
-        shouldBackup = true;
-      } else {
-        const lastTime = new Date(lastBackup.createdAt).getTime();
-        const diffHours = (now - lastTime) / (1000 * 60 * 60);
-        if (diffHours >= 24) {
-          shouldBackup = true;
-        }
+      const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const alreadyDone = listBackups().some((b) => b.isAuto && b.filename.startsWith(`auto_backup_${today}`));
+      if (!alreadyDone) {
+        const backup = await createDatabaseBackup('auto_backup');
+        console.log(`[Backup] Sauvegarde automatique créée : ${backup.filename}`);
       }
-
-      if (shouldBackup) {
-        console.log('[AutoBackup] Création de la sauvegarde automatique quotidienne...');
-        const res = await createDatabaseBackup('auto_backup');
-        console.log(`[AutoBackup] Sauvegarde créée avec succès : ${res.filename} (${Math.round(res.sizeBytes / 1024)} Ko)`);
-      }
+      await purgeExpiredSessions();
     } catch (err) {
-      console.warn('[AutoBackup] Erreur lors de la sauvegarde automatique :', err);
+      console.error('[Backup] Échec de la sauvegarde automatique :', err);
     }
   };
+  firstCheckTimer = setTimeout(runCheck, 5000);
+  autoBackupTimer = setInterval(runCheck, 60 * 60 * 1000);
+}
 
-  // Lancement après 5 secondes au démarrage
-  setTimeout(checkAndRun, 5000);
-
-  // Puis vérification toutes les heures
-  setInterval(checkAndRun, 60 * 60 * 1000);
+export function stopAutoBackupSchedule(): void {
+  if (firstCheckTimer) clearTimeout(firstCheckTimer);
+  if (autoBackupTimer) clearInterval(autoBackupTimer);
+  firstCheckTimer = null;
+  autoBackupTimer = null;
 }

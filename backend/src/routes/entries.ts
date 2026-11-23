@@ -1,276 +1,179 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
 import { db } from '../database';
-import { computeActualHours, computeDailyDelta } from '../services/hoursService';
+import { computeActualHours, computeDailyDelta, isUnworkedFutureEntry } from '../services/hoursService';
 import { logAudit } from '../services/auditService';
+import { assertMonthsOpen } from '../services/settingsService';
+import {
+  asyncHandler,
+  badRequest,
+  localToday,
+  notFound,
+  optionalNumber,
+  optionalString,
+  optionalTime,
+  requireDate,
+  requireInteger,
+  requireNumber,
+  requireOneOf,
+  requireUserId,
+  requireYearMonth
+} from '../http';
+import { ABSENCE_IMPACTS } from '../types';
 
 export const entriesRouter = Router();
 
-/**
- * GET /api/entries?month=YYYY-MM
- * Récupère toutes les entrées d'un mois avec statuts joints et calculs d'écarts
- */
-entriesRouter.get('/', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    const todayStr = `${y}-${m}-${d}`;
-    const defaultMonth = `${y}-${m}`;
-    const month = (req.query.month as string) || defaultMonth;
+const ENRICHED_SELECT = `
+  SELECT
+    d.*,
+    s.code AS status_code,
+    s.label AS status_label,
+    s.color_hex AS status_color,
+    s.accounting_rule,
+    p.label AS period_label
+  FROM daily_entries d
+  LEFT JOIN status_catalog s ON d.status_id = s.id
+  LEFT JOIN periods p ON d.period_id = p.id
+`;
 
-    const rows = await db.all<any>(`
-      SELECT 
-        d.*,
-        s.code as status_code,
-        s.label as status_label,
-        s.color_hex as status_color,
-        s.accounting_rule,
-        p.label as period_label
-      FROM daily_entries d
-      LEFT JOIN status_catalog s ON d.status_id = s.id
-      LEFT JOIN periods p ON d.period_id = p.id
-      WHERE d.user_id = ? AND d.entry_date LIKE ?
-      ORDER BY d.entry_date ASC
-    `, [userId, `${month}%`]);
+/** Ajoute l'écart calculé à une ligne, de la même façon pour toutes les routes. */
+function enrich(row: any, todayStr: string) {
+  const { delta, positive, negative } = computeDailyDelta(row, isUnworkedFutureEntry(row, todayStr));
+  return { ...row, delta_hours: delta, positive_delta: positive, negative_delta: negative };
+}
 
-    // Compléter chaque ligne avec les calculs d'écart
-    const enriched = rows.map((r) => {
-      const isUnworkedFuture = Boolean(r.entry_date && r.entry_date > todayStr && Number(r.actual_hours || 0) === 0 && !r.status_id);
-      const { delta, positive, negative } = computeDailyDelta(r, isUnworkedFuture);
-      return {
-        ...r,
-        delta_hours: delta,
-        positive_delta: positive,
-        negative_delta: negative
-      };
-    });
+/** GET /api/entries?month=AAAA-MM */
+entriesRouter.get(
+  '/',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const todayStr = localToday();
+    const month = req.query.month === undefined ? todayStr.slice(0, 7) : requireYearMonth(req.query.month, 'Le mois');
+    const rows = await db.all(
+      `${ENRICHED_SELECT} WHERE d.user_id = ? AND d.entry_date >= ? AND d.entry_date <= ? ORDER BY d.entry_date ASC`,
+      [userId, `${month}-01`, `${month}-31`]
+    );
+    res.json({ success: true, data: rows.map((r) => enrich(r, todayStr)) });
+  })
+);
 
-    res.json({ success: true, data: enriched });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * GET /api/entries/:date
- * Récupère une entrée journalière précise
- */
-entriesRouter.get('/:date', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const { date } = req.params;
-    const row = await db.get<any>(`
-      SELECT 
-        d.*,
-        s.code as status_code,
-        s.label as status_label,
-        s.color_hex as status_color,
-        s.accounting_rule,
-        p.label as period_label
-      FROM daily_entries d
-      LEFT JOIN status_catalog s ON d.status_id = s.id
-      LEFT JOIN periods p ON d.period_id = p.id
-      WHERE d.user_id = ? AND d.entry_date = ?
-    `, [userId, date]);
-
-    if (!row) {
-      return res.json({ success: true, data: null });
-    }
-
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const isUnworkedFuture = Boolean(row.entry_date && row.entry_date > todayStr && Number(row.actual_hours || 0) === 0 && !row.status_id);
-
-    const { delta, positive, negative } = computeDailyDelta(row, isUnworkedFuture);
-    res.json({
-      success: true,
-      data: {
-        ...row,
-        delta_hours: delta,
-        positive_delta: positive,
-        negative_delta: negative
-      }
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+/** GET /api/entries/:date */
+entriesRouter.get(
+  '/:date',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const date = requireDate(req.params.date, 'La date');
+    const row = await db.get(`${ENRICHED_SELECT} WHERE d.user_id = ? AND d.entry_date = ?`, [userId, date]);
+    res.json({ success: true, data: row ? enrich(row, localToday()) : null });
+  })
+);
 
 /**
  * POST /api/entries
- * Enregistre ou met à jour une entrée journalière avec audit et recalcul
+ * Enregistre ou met à jour la journée indiquée. Une saisie individuelle est
+ * marquée is_override = 1 pour qu'une période posée ensuite ne l'écrase pas.
  */
-entriesRouter.post('/', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const {
-      entry_date,
-      expected_hours = 0,
-      start_time = null,
-      end_time = null,
-      break_minutes = 0,
-      manual_actual_hours = null,
-      status_id = null,
-      notes = null,
-      audit_reason = null
-    } = req.body;
+entriesRouter.post(
+  '/',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const body = req.body || {};
 
-    if (!entry_date || !/^\d{4}-\d{2}-\d{2}$/.test(entry_date)) {
-      return res.status(400).json({ success: false, error: "La date (entry_date) est invalide (format YYYY-MM-DD requis)." });
+    const entryDate = requireDate(body.entry_date, 'La date');
+    const startTime = optionalTime(body.start_time, "L'heure d'arrivée");
+    const endTime = optionalTime(body.end_time, "L'heure de départ");
+    if ((startTime && !endTime) || (!startTime && endTime)) {
+      throw badRequest("Indiquez à la fois l'heure d'arrivée et l'heure de départ.");
     }
-    if (start_time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(start_time)) {
-      return res.status(400).json({ success: false, error: "L'heure d'arrivée est invalide (format HH:mm requis)." });
-    }
-    if (end_time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(end_time)) {
-      return res.status(400).json({ success: false, error: "L'heure de départ est invalide (format HH:mm requis)." });
-    }
-    const bMin = Number(break_minutes || 0);
-    if (isNaN(bMin) || bMin < 0 || bMin > 360) {
-      return res.status(400).json({ success: false, error: "La pause doit être comprise entre 0 et 360 minutes." });
-    }
-    const expH = Number(expected_hours || 0);
-    if (isNaN(expH) || expH < 0 || expH > 24) {
-      return res.status(400).json({ success: false, error: "Les heures prévues doivent être comprises entre 0 et 24." });
-    }
+    const breakMinutes = body.break_minutes === undefined || body.break_minutes === null || body.break_minutes === ''
+      ? 0
+      : requireInteger(body.break_minutes, 'La pause (en minutes)', 0, 360);
+    const expectedHours = body.expected_hours === undefined || body.expected_hours === null || body.expected_hours === ''
+      ? 0
+      : requireNumber(body.expected_hours, 'Les heures prévues', 0, 24);
+    const manualHours = optionalNumber(body.manual_actual_hours, 'Les heures faites', 0, 24);
+    const notes = optionalString(body.notes, 'La note', 1000);
+    const auditReason = optionalString(body.audit_reason, 'Le motif de modification', 200);
 
-    // Récupérer l'état existant pour l'audit log
-    const existing = await db.get<any>(`SELECT * FROM daily_entries WHERE user_id = ? AND entry_date = ?`, [userId, entry_date]);
+    let statusId: number | null = null;
+    if (body.status_id !== undefined && body.status_id !== null && body.status_id !== '') {
+      statusId = requireInteger(body.status_id, 'Le statut', 1, Number.MAX_SAFE_INTEGER);
+      const status = await db.get(`SELECT id FROM status_catalog WHERE id = ?`, [statusId]);
+      if (!status) throw badRequest("Le statut indiqué n'existe pas.");
+    }
+    const absenceReason = statusId ? optionalString(body.absence_reason, "Le motif d'absence", 40) : null;
+    const absenceImpact = statusId && body.absence_impact
+      ? requireOneOf(body.absence_impact, ABSENCE_IMPACTS, "L'impact de l'absence")
+      : null;
 
-    // Calcul automatique ou forçage manuel des heures réelles
+    // Heures faites : saisie directe (absence, forçage) ou calcul à partir des horaires.
     let actualHours = 0;
     let manualOverride = 0;
-
-    if (manual_actual_hours !== null && manual_actual_hours !== undefined && manual_actual_hours !== '') {
-      actualHours = Number(manual_actual_hours);
+    if (manualHours !== null) {
+      actualHours = manualHours;
       manualOverride = 1;
-    } else if (start_time && end_time) {
-      actualHours = computeActualHours(start_time, end_time, Number(break_minutes || 0));
-      manualOverride = 0;
+    } else if (startTime && endTime) {
+      actualHours = computeActualHours(startTime, endTime, breakMinutes);
     }
 
-    let insertedId = existing?.id;
+    const saved = await db.transaction(async () => {
+      await assertMonthsOpen(userId, [entryDate]);
+      const existing = await db.get<any>(`SELECT * FROM daily_entries WHERE user_id = ? AND entry_date = ?`, [userId, entryDate]);
+      const values = [expectedHours, startTime, endTime, breakMinutes, actualHours, manualOverride, statusId, absenceReason, absenceImpact, notes];
+      const newValues = {
+        entry_date: entryDate,
+        expected_hours: expectedHours,
+        start_time: startTime,
+        end_time: endTime,
+        break_minutes: breakMinutes,
+        actual_hours: actualHours,
+        status_id: statusId,
+        absence_reason: absenceReason,
+        absence_impact: absenceImpact,
+        notes
+      };
 
-    if (existing) {
-      // Mise à jour
-      await db.run(`
-        UPDATE daily_entries SET
-          expected_hours = ?,
-          start_time = ?,
-          end_time = ?,
-          break_minutes = ?,
-          actual_hours = ?,
-          manual_actual_override = ?,
-          status_id = ?,
-          is_override = 1,
-          notes = ?,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ? AND id = ?
-      `, [
-        Number(expected_hours || 0),
-        start_time || null,
-        end_time || null,
-        Number(break_minutes || 0),
-        actualHours,
-        manualOverride,
-        status_id || null,
-        notes || null,
-        userId,
-        existing.id
-      ]);
-
-      await logAudit(
-        userId,
-        'daily_entries',
-        existing.id,
-        'UPDATE',
-        existing,
-        { entry_date, expected_hours, start_time, end_time, break_minutes, actual_hours: actualHours, status_id, notes },
-        audit_reason || 'Modification manuelle du pointage'
-      );
-    } else {
-      // Insertion
-      const result = await db.run(`
-        INSERT INTO daily_entries (
-          user_id, entry_date, expected_hours, start_time, end_time, break_minutes,
-          actual_hours, manual_actual_override, status_id, is_override, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-      `, [
-        userId,
-        entry_date,
-        Number(expected_hours || 0),
-        start_time || null,
-        end_time || null,
-        Number(break_minutes || 0),
-        actualHours,
-        manualOverride,
-        status_id || null,
-        notes || null
-      ]);
-
-      insertedId = result.lastID;
-
-      await logAudit(
-        userId,
-        'daily_entries',
-        insertedId,
-        'INSERT',
-        null,
-        { entry_date, expected_hours, start_time, end_time, break_minutes, actual_hours: actualHours, status_id, notes },
-        audit_reason || 'Création du pointage'
-      );
-    }
-
-    // Récupérer la ligne enrichie finale
-    const updated = await db.get<any>(`
-      SELECT 
-        d.*,
-        s.code as status_code,
-        s.label as status_label,
-        s.color_hex as status_color,
-        s.accounting_rule,
-        p.label as period_label
-      FROM daily_entries d
-      LEFT JOIN status_catalog s ON d.status_id = s.id
-      LEFT JOIN periods p ON d.period_id = p.id
-      WHERE d.user_id = ? AND d.id = ?
-    `, [userId, insertedId]);
-
-    const { delta, positive, negative } = computeDailyDelta(updated);
-
-    res.json({
-      success: true,
-      data: {
-        ...updated,
-        delta_hours: delta,
-        positive_delta: positive,
-        negative_delta: negative
+      if (existing) {
+        await db.run(
+          `UPDATE daily_entries SET
+             expected_hours = ?, start_time = ?, end_time = ?, break_minutes = ?, actual_hours = ?,
+             manual_actual_override = ?, status_id = ?, absence_reason = ?, absence_impact = ?, notes = ?,
+             is_override = 1, updated_at = CURRENT_TIMESTAMP
+           WHERE user_id = ? AND id = ?`,
+          [...values, userId, existing.id]
+        );
+        await logAudit(userId, 'daily_entries', existing.id, 'UPDATE', existing, newValues, auditReason || 'Modification du pointage');
+        return existing.id as number;
       }
+
+      const result = await db.run(
+        `INSERT INTO daily_entries (
+           expected_hours, start_time, end_time, break_minutes, actual_hours,
+           manual_actual_override, status_id, absence_reason, absence_impact, notes, user_id, entry_date, is_override
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        [...values, userId, entryDate]
+      );
+      await logAudit(userId, 'daily_entries', result.lastID, 'INSERT', null, newValues, auditReason || 'Création du pointage');
+      return result.lastID;
     });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
-/**
- * DELETE /api/entries/:date
- * Supprime ou réinitialise une entrée
- */
-entriesRouter.delete('/:date', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const { date } = req.params;
-    const existing = await db.get<any>(`SELECT * FROM daily_entries WHERE user_id = ? AND entry_date = ?`, [userId, date]);
-    if (!existing) {
-      return res.status(404).json({ success: false, error: "Entrée introuvable." });
-    }
+    const row = await db.get(`${ENRICHED_SELECT} WHERE d.user_id = ? AND d.id = ?`, [userId, saved]);
+    res.json({ success: true, data: enrich(row, localToday()) });
+  })
+);
 
-    await db.run(`DELETE FROM daily_entries WHERE user_id = ? AND id = ?`, [userId, existing.id]);
-    await logAudit(userId, 'daily_entries', existing.id, 'DELETE', existing, null, 'Suppression du pointage');
-
-    res.json({ success: true, message: `Pointage du ${date} supprimé.` });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+/** DELETE /api/entries/:date — supprime la journée (annulable). */
+entriesRouter.delete(
+  '/:date',
+  asyncHandler(async (req, res) => {
+    const userId = requireUserId(req);
+    const date = requireDate(req.params.date, 'La date');
+    await db.transaction(async () => {
+      await assertMonthsOpen(userId, [date]);
+      const existing = await db.get<any>(`SELECT * FROM daily_entries WHERE user_id = ? AND entry_date = ?`, [userId, date]);
+      if (!existing) throw notFound('Aucune journée enregistrée à cette date.');
+      await db.run(`DELETE FROM daily_entries WHERE user_id = ? AND id = ?`, [userId, existing.id]);
+      await logAudit(userId, 'daily_entries', existing.id, 'DELETE', existing, null, 'Suppression du pointage');
+    });
+    res.json({ success: true, message: `Journée du ${date} supprimée.` });
+  })
+);

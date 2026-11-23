@@ -1,8 +1,8 @@
 # Directives & Règles Strictes pour l'IA (agent.md)
-**Application :** Suivi Heures Pro (Ma Badgeuse)  
-**Version :** 0.2.0  
+**Application :** Ma Badgeuse  
+**Version :** 0.3.0  
 **Environnement cible :** Auto-hébergement Docker sur Proxmox (Debian LXC / VM)  
-**Date :** Novembre 2026
+**Date :** 23 novembre 2026
 
 ---
 
@@ -13,8 +13,9 @@
 > **Il est STRICTEMENT INTERDIT à l'IA d'exécuter toute commande Git (`git init`, `git add`, `git commit`, `git push`, `git checkout`, `git branch`, etc.) sans l'accord explicite et préalable de l'utilisateur.**  
 > Toute gestion du dépôt de code est sous la responsabilité directe de l'utilisateur.
 
-- **Aucune dépendance externe non maîtrisée :** Toutes les dépendances (npm/Docker) doivent être documentées, stables et adaptées à Node.js 20+ LTS et React 18+.
+- **Aucune dépendance externe non maîtrisée :** Toutes les dépendances (npm/Docker) doivent être documentées, stables et adaptées à Node.js ≥ 20.17 (image Docker : Node 24 LTS) et React 18+.
 - **Aucune commande destructive sans confirmation :** Tout nettoyage de volume, suppression de table ou reset de base de données nécessite une confirmation préalable.
+- **Vérifier avant de livrer :** `npm test` (backend), `npm run typecheck` et `npm run build:all` doivent passer. Toute évolution du schéma passe par une nouvelle migration dans `backend/src/database.ts` (incrémenter `SCHEMA_VERSION`), jamais par une modification d'une migration existante.
 
 ---
 
@@ -49,8 +50,10 @@ L'application doit toujours distinguer clairement :
 - 9 statuts métier par défaut avec palette chromatique spécifique (voir `KNOWLEDGE_BASE.md`).
 - Chaque statut pilote le calcul via sa règle comptable `accounting_rule` :
   - `MAINTAINED` (Congé payé, Maladie avec maintien) : heures prévues réputées faites, écart négatif forcé à 0.
-  - `NEUTRAL` (Jour 0h, repos) : aucune dette générée.
-  - `DEDUCTED` (Absence à rattraper / non payée) : génère un écart négatif équivalent aux heures manquées.
+  - `NEUTRAL` (Jour 0h, repos) et `VARIABLE` (vacances scolaires) : aucune dette ; les heures travaillées comptent en plus.
+  - `DEDUCTED` (Absence à rattraper / non payée) et `CUSTOM` : écart brut, les heures manquées créent une dette.
+- Le motif et l'impact d'une absence sont enregistrés dans `daily_entries.absence_reason` / `absence_impact` ; ne jamais les déduire du texte de la note.
+- Un mois validé est verrouillé : toute écriture datée de ce mois est refusée (`assertMonthsOpen`).
 - **Vacances scolaires :** Ne suppriment jamais automatiquement les heures de travail prévues et ne constituent pas des congés personnels (des journées de grand nettoyage ou de préparation peuvent être travaillées).
 
 ### 2.5. Périodes & Règle de Priorité Anti-Écrasement
@@ -60,8 +63,8 @@ L'application doit toujours distinguer clairement :
 
 ### 2.6. Étanchéité Multi-Utilisateurs & Remise à Zéro Personnelle
 - Chaque utilisateur possède son propre espace strictement étanche via `user_id`.
-- La **Remise à Zéro personnelle (RAZ)** d'un utilisateur supprime **exclusivement ses propres pointages** sans jamais altérer ceux des autres membres de la famille.
-- Une sauvegarde d'urgence (`safety_user_X`) est systématiquement créée avant effacement et sanctuarisée contre la purge de rotation.
+- La **Remise à Zéro personnelle (RAZ)** d'un utilisateur supprime **exclusivement ses propres données** (journées, périodes, régularisations, objectifs, historique) et conserve ses réglages ; les autres comptes ne sont jamais touchés.
+- Une sauvegarde de sécurité (`safety_user_X`) est systématiquement créée avant effacement (rotation séparée : 20 sauvegardes de sécurité gardées).
 
 ---
 
@@ -76,16 +79,26 @@ PRAGMA busy_timeout = 5000;
 ```
 - Données dans `/app/data/database.sqlite`.
 - Sauvegardes à chaud via SQLite `VACUUM INTO` dans `/app/backups`.
+- **Une seule connexion**, opérations sérialisées ; toute écriture multiple passe par `db.transaction(...)`. Schéma versionné par `PRAGMA user_version` (migrations dans `database.ts`).
+- Valeurs par défaut des réglages : un seul endroit, `backend/src/defaults.ts`.
 
 ### 3.2. Sécurité des Accès & Administration
-- **Mots de passe :** Hachage cryptographique **PBKDF2 avec sel aléatoire de 16 octets** et 10 000 itérations SHA-256. Rétrocompatibilité avec mise à niveau automatique des anciens hachages.
-- **Anti-Bruteforce :** Verrouillage automatique de 15 minutes après 5 échecs consécutifs.
-- **Mode Administrateur :** Protégé par code PIN administrateur (`x-admin-pin`). Les actions globales (sauvegardes serveur, restauration, reset total, suppression de compte) requièrent impérativement ce PIN.
+- **Mots de passe :** scrypt, 10 caractères minimum ; anciens hachages (PBKDF2, SHA-256) convertis à la connexion.
+- **Session :** cookie `HttpOnly` / `SameSite=Strict` ; aucun jeton ni secret stocké côté navigateur.
+- **Anti-Bruteforce :** 5 échecs par compte → 15 minutes ; limites par adresse IP.
+- **Administration :** rôle `is_admin` vérifié par le serveur (`requireAdmin`) ; aucun code PIN. Pas de compte par défaut : le premier compte créé est administrateur.
+- **Entrées :** toute donnée reçue est validée avec les fonctions de `backend/src/http.ts` ; erreurs via `HttpError`, jamais de message interne renvoyé au client.
 
-### 3.3. PWA & Installation Smartphone
-- Manifeste PWA complet avec icônes dédiées :
-  - `pwa-192x192.png` (grille d'applications Android)
-  - `pwa-512x512.png` (écran de démarrage / splash screen)
-  - `apple-touch-icon.png` (iOS Safari)
-  - `favicon-64x64.png` (navigateurs desktop)
-- Service Worker assurant le cache applicatif et le fonctionnement hors-ligne.
+### 3.3. Utilisation sur smartphone (usage exclusif)
+- L'application est utilisée **uniquement sur téléphone** : concevoir chaque écran pour une largeur de 360 à 430 px, au pouce. Zones tactiles d'au moins 44 px, actions principales dans la **barre de navigation du bas** (Pointer, Congés, Bilan, Envoyer, Plus), le reste dans le menu « Plus ». Respecter les marges `env(safe-area-inset-*)`.
+- PWA installable : `frontend/public/manifest.webmanifest` + `frontend/public/sw.js`. Le service worker **ne met rien en cache** (il affiche seulement une page « Serveur injoignable » hors réseau et gère le clic sur les notifications) : ne pas y ajouter de cache sans stratégie de mise à jour.
+- Fenêtre d'installation Android : `components/InstallPrompt.tsx` + `services/pwa.ts`. Une fois l'application installée ou la proposition refusée (`localStorage.install_prompt_state`), elle n'est plus affichée automatiquement ; elle reste accessible dans « Plus ».
+- L'installation en un geste et les notifications Android exigent **HTTPS** (ou `localhost`). En HTTP sur le réseau local, la fenêtre explique l'ajout manuel par le menu de Chrome.
+- Aucun script en ligne dans `index.html` (la CSP l'interdit) : utiliser un fichier dans `frontend/public/`.
+
+### 3.4. Organisation du frontend
+- `App.tsx` : session uniquement (vérification, connexion, changement de mot de passe imposé), puis `components/workspace/Workspace.tsx`.
+- `hooks/useWorkspace.ts` : tout l'état et les actions de l'espace connecté (chargements, formulaire du jour, compteurs, objectifs, réglages, périodes, transmission). Il retourne un objet `WorkspaceModel` passé aux écrans sous la prop `app`. `hooks/useTheme.ts` et `hooks/useReminders.ts` gèrent le thème et les rappels.
+- `components/workspace/` : un composant par bloc d'écran (`AppHeader`, `BottomNav`, `MoreMenu`, `QuickBadgeBanner`, `MonthOverview`, `CountersSection`, `DayFormSection`, `ProofBook`, `ShareSection`), par fenêtre (`SettingsModal`, `AdjustmentModal`, `PeriodModal`, `ShareModal`, `AnnualModal`) et par relevé imprimable (`MonthlyPrint`, `AnnualPrint`). Ils affichent et déclenchent les actions du modèle, sans logique métier propre.
+- `domain.ts` : motifs d'absence, valeurs par défaut, fonctions pures (motif et impact d'une journée, libellés de l'historique). `utils/shareMessage.ts` : texte du récapitulatif envoyé au responsable.
+- Ajouter un nouvel état ou une action dans `useWorkspace` (et l'ajouter à l'objet retourné), jamais dans un composant d'écran, sauf état purement visuel local.

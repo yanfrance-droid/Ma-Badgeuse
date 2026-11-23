@@ -5,6 +5,8 @@
 @layer base {
   html {
     -webkit-tap-highlight-color: transparent;
+    /* Supprime le délai du double-toucher sur les boutons, sans bloquer le zoom à deux doigts. */
+    touch-action: manipulation;
   }
   html.dark {
     color-scheme: dark;
@@ -14,12 +16,6 @@
   }
   body {
     overscroll-behavior-y: none;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  input, textarea, select {
-    user-select: auto;
-    -webkit-user-select: auto;
   }
 }
 

@@ -1,204 +1,137 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
 import multer from 'multer';
-import path from 'path';
 import fs from 'fs';
-import { adminMiddleware } from '../middleware/adminAuth';
+import path from 'path';
+import { requireAdmin } from '../middleware/adminAuth';
+import { asyncHandler, badRequest, requireUserId } from '../http';
 import {
+  BACKUP_TMP_DIR,
   createDatabaseBackup,
-  listBackups,
-  restoreBackupFromFile,
+  createExportSnapshot,
   getDatabaseStatus,
+  listBackups,
   optimizeDatabase,
+  resetServerAll,
   resetUserData,
-  resetServerAll
+  resolveBackupFile,
+  restoreBackupFromFile
 } from '../services/backupService';
 
-// Upload sécurisé avec limite stricte de taille à 50 Mo
 const upload = multer({
-  dest: path.resolve(__dirname, '../../backups/tmp'),
-  limits: { fileSize: 50 * 1024 * 1024 }
+  dest: BACKUP_TMP_DIR,
+  limits: { fileSize: 50 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext === '.sqlite' || ext === '.db') cb(null, true);
+    else cb(badRequest('Seuls les fichiers .sqlite ou .db sont acceptés.'));
+  }
 });
+
+function removeQuietly(file: string | undefined): void {
+  if (file && fs.existsSync(file)) {
+    try {
+      fs.unlinkSync(file);
+    } catch (err) {
+      console.warn('[Backup] Fichier temporaire non supprimé :', file, err);
+    }
+  }
+}
 
 export const backupRouter = Router();
 
 /**
- * POST /api/backup/create
- * Crée une sauvegarde à chaud de la base de données (ADMIN UNIQUEMENT)
- */
-backupRouter.post('/create', adminMiddleware, async (_req: Request, res: Response) => {
-  try {
-    const backup = await createDatabaseBackup();
-    res.json({ success: true, message: "Sauvegarde créée avec succès.", data: backup });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * GET /api/backup/list
- * Liste toutes les sauvegardes existantes (ADMIN UNIQUEMENT)
- */
-backupRouter.get('/list', adminMiddleware, async (_req: Request, res: Response) => {
-  try {
-    const backups = listBackups();
-    res.json({ success: true, data: backups });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * GET /api/backup/export-current
- * Télécharge directement un snapshot de la base SQLite active (ADMIN UNIQUEMENT)
- */
-backupRouter.get('/export-current', adminMiddleware, async (_req: Request, res: Response) => {
-  try {
-    const backup = await createDatabaseBackup();
-    res.download(backup.filepath, `ma_badgeuse_${backup.filename}`);
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * GET /api/backup/download/:filename
- * Télécharge un fichier de sauvegarde précis (ADMIN UNIQUEMENT)
- */
-backupRouter.get('/download/:filename', adminMiddleware, (req: Request, res: Response) => {
-  try {
-    const { filename } = req.params;
-    const backupDir = process.env.BACKUP_DIR || path.resolve(__dirname, '../../backups');
-    const filepath = path.join(backupDir, path.basename(filename));
-
-    if (!fs.existsSync(filepath)) {
-      return res.status(404).json({ success: false, error: "Fichier introuvable." });
-    }
-
-    res.download(filepath, filename);
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * POST /api/backup/restore/:filename
- * Restaure une sauvegarde existante (ADMIN UNIQUEMENT)
- */
-backupRouter.post('/restore/:filename', adminMiddleware, async (req: Request, res: Response) => {
-  try {
-    const { filename } = req.params;
-    const backupDir = process.env.BACKUP_DIR || path.resolve(__dirname, '../../backups');
-    const filepath = path.join(backupDir, path.basename(filename));
-
-    if (!fs.existsSync(filepath)) {
-      return res.status(404).json({ success: false, error: "Sauvegarde introuvable." });
-    }
-
-    await restoreBackupFromFile(filepath);
-    res.json({ success: true, message: `Sauvegarde ${filename} restaurée avec succès.` });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * POST /api/backup/upload-restore
- * Permet d'uploader un fichier .sqlite depuis le smartphone / PC et de le restaurer (ADMIN UNIQUEMENT)
- */
-backupRouter.post('/upload-restore', adminMiddleware, upload.single('database_file'), async (req: Request, res: Response) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, error: "Aucun fichier reçu." });
-    }
-
-    await restoreBackupFromFile(req.file.path);
-    // Nettoyer le fichier temporaire
-    if (fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
-
-    res.json({ success: true, message: "Base de données importée et restaurée avec succès." });
-  } catch (err: any) {
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * GET /api/backup/status
- * Diagnostic et santé de la base de données
- */
-backupRouter.get('/status', async (req: Request, res: Response) => {
-  try {
-    const status = await getDatabaseStatus(req.userId);
-    res.json({ success: true, data: status });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * POST /api/backup/optimize
- * Optimisation, VACUUM et checkpoint WAL (ADMIN UNIQUEMENT)
- */
-backupRouter.post('/optimize', adminMiddleware, async (_req: Request, res: Response) => {
-  try {
-    const result = await optimizeDatabase();
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
  * POST /api/backup/reset-my-data
- * Remise à zéro isolée du compte de l'utilisateur connecté
- * Accessible à TOUT utilisateur pour son PROPRE compte (WHERE user_id = req.userId)
+ * Efface les données de travail du compte connecté (tout utilisateur, pour lui-même).
  */
-backupRouter.post('/reset-my-data', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const { confirmation } = req.body;
-    if (confirmation !== 'RESET') {
-      return res.status(400).json({ success: false, error: "Veuillez taper 'RESET' pour confirmer la remise à zéro de vos heures." });
+backupRouter.post(
+  '/reset-my-data',
+  asyncHandler(async (req, res) => {
+    if (req.body?.confirmation !== 'RESET') {
+      throw badRequest('Tapez RESET pour confirmer la remise à zéro de vos données.');
     }
-    const result = await resetUserData(userId);
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+    res.json(await resetUserData(requireUserId(req)));
+  })
+);
 
-/**
- * POST /api/backup/reset-server-all
- * Remise à zéro totale du serveur (Tous les comptes - ADMIN UNIQUEMENT)
- */
-backupRouter.post('/reset-server-all', adminMiddleware, async (req: Request, res: Response) => {
-  try {
-    const { confirmation } = req.body;
-    const result = await resetServerAll(confirmation);
-    res.json(result);
-  } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
+// Toutes les routes suivantes sont réservées aux administrateurs.
+backupRouter.use(requireAdmin);
 
-/**
- * POST /api/backup/reset
- * Alias pour remise à zéro personnelle
- */
-backupRouter.post('/reset', async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId || 1;
-    const { confirmation } = req.body;
-    if (confirmation !== 'RESET') {
-      return res.status(400).json({ success: false, error: "Veuillez taper 'RESET' pour confirmer." });
+backupRouter.get(
+  '/status',
+  asyncHandler(async (_req, res) => {
+    res.json({ success: true, data: await getDatabaseStatus() });
+  })
+);
+
+backupRouter.get(
+  '/list',
+  asyncHandler(async (_req, res) => {
+    res.json({ success: true, data: listBackups() });
+  })
+);
+
+backupRouter.post(
+  '/create',
+  asyncHandler(async (_req, res) => {
+    const backup = await createDatabaseBackup();
+    res.status(201).json({ success: true, message: 'Sauvegarde créée.', data: { filename: backup.filename, sizeBytes: backup.sizeBytes } });
+  })
+);
+
+/** Téléchargement d'un instantané de la base active, sans laisser de copie sur le serveur. */
+backupRouter.get(
+  '/export-current',
+  asyncHandler(async (_req, res, next) => {
+    const snapshot = await createExportSnapshot();
+    const name = `ma_badgeuse_${path.basename(snapshot).replace(/^export_/, '')}`;
+    res.download(snapshot, name, (err) => {
+      removeQuietly(snapshot);
+      if (err && !res.headersSent) next(err);
+    });
+  })
+);
+
+backupRouter.get(
+  '/download/:filename',
+  asyncHandler(async (req, res) => {
+    const filepath = resolveBackupFile(req.params.filename);
+    res.download(filepath, path.basename(filepath));
+  })
+);
+
+backupRouter.post(
+  '/restore/:filename',
+  asyncHandler(async (req, res) => {
+    const filepath = resolveBackupFile(req.params.filename);
+    const result = await restoreBackupFromFile(filepath);
+    res.json({ success: true, message: `Sauvegarde ${path.basename(filepath)} restaurée.`, safetyBackup: result.safetyBackup });
+  })
+);
+
+backupRouter.post(
+  '/upload-restore',
+  upload.single('database_file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw badRequest('Aucun fichier reçu.');
+    try {
+      const result = await restoreBackupFromFile(req.file.path);
+      res.json({ success: true, message: 'Base importée et restaurée.', safetyBackup: result.safetyBackup });
+    } finally {
+      removeQuietly(req.file.path);
     }
-    const result = await resetUserData(userId);
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+  })
+);
+
+backupRouter.post(
+  '/optimize',
+  asyncHandler(async (_req, res) => {
+    res.json(await optimizeDatabase());
+  })
+);
+
+backupRouter.post(
+  '/reset-server-all',
+  asyncHandler(async (req, res) => {
+    res.json(await resetServerAll(req.body?.confirmation));
+  })
+);

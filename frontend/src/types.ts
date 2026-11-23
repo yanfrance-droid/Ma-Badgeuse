@@ -1,12 +1,38 @@
 export type AccountingRule = 'MAINTAINED' | 'NEUTRAL' | 'DEDUCTED' | 'VARIABLE' | 'CUSTOM';
 export type CounterType = 'POSITIVE' | 'NEGATIVE';
 export type ActionType = 'INSERT' | 'UPDATE' | 'DELETE' | 'REGULARIZE' | 'RESTORE';
+export type OperationType = 'SETTLE' | 'ADD';
+/** Impact d'une absence sur les compteurs (stocké avec la journée). */
+export type AbsenceImpact = 'NEUTRAL' | 'TO_RECOVER' | 'COUNTED_AS_WORKED';
 
 export interface User {
   id: number;
   username: string;
   display_name: string;
+  is_admin: boolean;
+  must_change_password: boolean;
   created_at?: string;
+}
+
+export interface SetupStatus {
+  needs_setup: boolean;
+  registration_open: boolean;
+  password_min_length: number;
+}
+
+/** Réglages du compte, renvoyés par le serveur (valeurs texte). */
+export interface UserSettings {
+  habitual_start_time: string;
+  habitual_end_time: string;
+  habitual_break_minutes: string;
+  habitual_expected_hours: string;
+  default_monthly_target: string;
+  annual_target_hours: string;
+  agent_name: string;
+  employer_name: string;
+  job_title: string;
+  manager_phone: string;
+  manager_email: string;
 }
 
 export interface StatusItem {
@@ -32,7 +58,10 @@ export interface DailyEntry {
   status_id: number | null;
   period_id: number | null;
   is_override: number;
+  absence_reason: string | null;
+  absence_impact: AbsenceImpact | null;
   notes: string | null;
+  updated_at?: string;
   delta_hours?: number;
   positive_delta?: number;
   negative_delta?: number;
@@ -53,9 +82,8 @@ export interface PeriodItem {
   notes: string | null;
   status_label?: string;
   status_color?: string;
+  days_count?: number;
 }
-
-export type OperationType = 'SETTLE' | 'ADD';
 
 export interface RegularizationItem {
   id: number;
@@ -72,9 +100,11 @@ export interface AuditLogItem {
   entity_name: string;
   entity_id: number;
   action_type: ActionType;
-  old_values: any;
-  new_values: any;
+  old_values: unknown;
+  new_values: unknown;
   reason: string | null;
+  undone_at: string | null;
+  reverts_log_id: number | null;
   created_at: string;
 }
 
@@ -135,4 +165,25 @@ export interface AnnualCockpitSummary {
   total_positive_delta: number;
   total_negative_delta: number;
   months: AnnualMonthItem[];
+}
+
+export interface DatabaseStatus {
+  integrity: string;
+  integrityOk: boolean;
+  databaseSizeKb: number;
+  walSizeKb: number;
+  totalUsers: number;
+  totalEntries: number;
+  totalRegularizations: number;
+  totalPeriods: number;
+  totalBackups: number;
+  lastBackupDate: string | null;
+}
+
+export interface BackupItem {
+  filename: string;
+  sizeBytes: number;
+  createdAt: string;
+  isAuto: boolean;
+  isSafety: boolean;
 }

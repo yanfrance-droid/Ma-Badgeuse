@@ -6,19 +6,18 @@ export type OperationType = 'SETTLE' | 'ADD';
 
 export type ActionType = 'INSERT' | 'UPDATE' | 'DELETE' | 'REGULARIZE' | 'RESTORE';
 
+/** Impact d'une absence sur les compteurs, choisi par l'utilisateur dans le formulaire. */
+export type AbsenceImpact = 'NEUTRAL' | 'TO_RECOVER' | 'COUNTED_AS_WORKED';
+export const ABSENCE_IMPACTS: readonly AbsenceImpact[] = ['NEUTRAL', 'TO_RECOVER', 'COUNTED_AS_WORKED'];
+export const ACCOUNTING_RULES: readonly AccountingRule[] = ['MAINTAINED', 'NEUTRAL', 'DEDUCTED', 'VARIABLE', 'CUSTOM'];
+
 export interface User {
   id: number;
   username: string;
   display_name: string;
+  is_admin: boolean;
+  must_change_password: boolean;
   created_at?: string;
-  updated_at?: string;
-}
-
-export interface UserSession {
-  token: string;
-  user_id: number;
-  created_at: string;
-  expires_at: string;
 }
 
 declare global {
@@ -54,6 +53,8 @@ export interface DailyEntry {
   status_id: number | null;
   period_id: number | null;
   is_override: number; // 0 or 1
+  absence_reason: string | null;
+  absence_impact: AbsenceImpact | null;
   notes: string | null;
   created_at?: string;
   updated_at?: string;
@@ -109,6 +110,8 @@ export interface AuditLog {
   old_values: any;
   new_values: any;
   reason: string | null;
+  undone_at: string | null;
+  reverts_log_id: number | null;
   created_at: string;
 }
 
